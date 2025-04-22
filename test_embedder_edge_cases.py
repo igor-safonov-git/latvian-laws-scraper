@@ -220,6 +220,7 @@ def test_special_characters(conn, verbose: bool = False) -> List[Dict[str, Any]]
         
         for doc in sampled_docs:
             doc_id = doc["id"]
+            url = doc["url"]
             text = doc["translated_text"]
             
             # Count special characters
@@ -244,24 +245,33 @@ def test_special_characters(conn, verbose: bool = False) -> List[Dict[str, Any]]
             """, (doc_id,))
             has_summary = cursor.fetchone()[0] > 0
             
-            if has_embedding and has_summary:
-                results.append({
-                    "test": f"Special Chars Doc {doc_id[:8]}...",
-                    "status": "Pass",
-                    "details": f"{special_count} special chars ({special_ratio:.1%}), has embedding and summary"
-                })
+            details = f"{special_count} special chars ({special_ratio:.1%})"
+            if not has_embedding or not has_summary:
+                status = "Fail"
+                missing = []
+                if not has_embedding:
+                    missing.append("embedding")
+                if not has_summary:
+                    missing.append("summary")
+                details = f"Missing {' and '.join(missing)} - URL: {url}"
             else:
-                results.append({
-                    "test": f"Special Chars Doc {doc_id[:8]}...",
-                    "status": "Fail",
-                    "details": f"Missing {'embedding' if not has_embedding else ''} {'summary' if not has_summary else ''}"
-                })
+                status = "Pass"
+                details = f"{special_count} special chars ({special_ratio:.1%}), has embedding and summary"
             
-            if verbose:
-                special_chars = set(c for c in text if not c.isalnum() and not c.isspace())
-                print(f"\nSpecial characters in doc {doc_id[:8]}...:")
-                print(f"Total special characters: {special_count} ({special_ratio:.1%} of text)")
-                print(f"Unique special characters: {sorted(special_chars)}")
+            results.append({
+                "test": f"Special Chars Doc {doc_id[:8]}...",
+                "status": status,
+                "details": details
+            })
+            
+            # Always show special characters
+            special_chars = set(c for c in text if not c.isalnum() and not c.isspace())
+            print(f"\nSpecial characters in doc {doc_id[:8]}...:")
+            print(f"URL: {url}")
+            print(f"Total special characters: {special_count} ({special_ratio:.1%} of text)")
+            print(f"Unique special characters: {sorted(special_chars)}")
+            print(f"Has embedding: {has_embedding}")
+            print(f"Has summary: {has_summary}")
     
     return results
 
@@ -391,18 +401,18 @@ def test_orphaned_records(conn, verbose: bool = False) -> List[Dict[str, Any]]:
                 "details": f"Found {orphaned_embeddings} embeddings without raw documents"
             })
             
-            if verbose:
-                cursor.execute("""
-                    SELECT id, metadata->>'url' as url
-                    FROM docs
-                    WHERE id NOT IN (SELECT id FROM raw_docs)
-                    LIMIT 3
-                """)
-                orphans = cursor.fetchall()
-                
-                print("\nSample Orphaned Embeddings:")
-                for doc in orphans:
-                    print(f"- ID: {doc['id'][:10]}..., URL: {doc.get('url', 'N/A')}")
+            # Always show orphaned embeddings
+            cursor.execute("""
+                SELECT id, metadata->>'url' as url
+                FROM docs
+                WHERE id NOT IN (SELECT id FROM raw_docs)
+                LIMIT 3
+            """)
+            orphans = cursor.fetchall()
+            
+            print("\nSample Orphaned Embeddings:")
+            for doc in orphans:
+                print(f"- ID: {doc['id'][:10]}..., URL: {doc.get('url', 'N/A')}")
         else:
             results.append({
                 "test": "Orphaned Embeddings",
@@ -424,6 +434,19 @@ def test_orphaned_records(conn, verbose: bool = False) -> List[Dict[str, Any]]:
                 "status": "Fail",
                 "details": f"Found {orphaned_chunks} chunks without parent documents"
             })
+            
+            # Always show orphaned chunks
+            cursor.execute("""
+                SELECT id, chunk_id, chunk_index
+                FROM doc_chunks
+                WHERE id NOT IN (SELECT id FROM docs)
+                LIMIT 3
+            """)
+            orphan_chunks = cursor.fetchall()
+            
+            print("\nSample Orphaned Chunks:")
+            for chunk in orphan_chunks:
+                print(f"- Doc ID: {chunk['id'][:10]}..., Chunk ID: {chunk['chunk_id'][:8]}..., Index: {chunk['chunk_index']}")
         else:
             results.append({
                 "test": "Orphaned Chunks",
@@ -445,6 +468,19 @@ def test_orphaned_records(conn, verbose: bool = False) -> List[Dict[str, Any]]:
                 "status": "Fail",
                 "details": f"Found {orphaned_summaries} summaries without parent documents"
             })
+            
+            # Always show orphaned summaries
+            cursor.execute("""
+                SELECT id, metadata->>'url' as url
+                FROM doc_summaries
+                WHERE id NOT IN (SELECT id FROM docs)
+                LIMIT 3
+            """)
+            orphan_summaries = cursor.fetchall()
+            
+            print("\nSample Orphaned Summaries:")
+            for summary in orphan_summaries:
+                print(f"- Doc ID: {summary['id'][:10]}..., URL: {summary.get('url', 'N/A')}")
         else:
             results.append({
                 "test": "Orphaned Summaries",
@@ -454,14 +490,16 @@ def test_orphaned_records(conn, verbose: bool = False) -> List[Dict[str, Any]]:
         
         # Check for documents missing chunks (only for docs that should have chunks)
         cursor.execute("""
-            SELECT COUNT(*) 
+            SELECT d.id, d.metadata->>'url' as url, (d.metadata->>'char_length')::int as char_length
             FROM docs d
-            WHERE (metadata->>'char_length')::int > 3000
+            WHERE (d.metadata->>'char_length')::int > 3000
             AND NOT EXISTS (
                 SELECT 1 FROM doc_chunks c WHERE c.id = d.id
             )
+            LIMIT 5
         """)
-        docs_missing_chunks = cursor.fetchone()[0]
+        missing_chunks_docs = cursor.fetchall()
+        docs_missing_chunks = len(missing_chunks_docs)
         
         if docs_missing_chunks > 0:
             results.append({
@@ -469,6 +507,11 @@ def test_orphaned_records(conn, verbose: bool = False) -> List[Dict[str, Any]]:
                 "status": "Warning",
                 "details": f"Found {docs_missing_chunks} large docs without chunks"
             })
+            
+            # Always show missing chunks details
+            print("\nDocuments missing chunks:")
+            for doc in missing_chunks_docs:
+                print(f"- ID: {doc['id'][:10]}..., Length: {doc['char_length']} chars, URL: {doc.get('url', 'N/A')}")
         else:
             results.append({
                 "test": "Docs Missing Chunks",
