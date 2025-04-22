@@ -8,6 +8,7 @@ import os
 import sys
 import psycopg2
 import psycopg2.extras
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
@@ -18,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 
 
-# Set up logging
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -198,6 +199,76 @@ class Scraper:
         
         return log_entry
 
+    def get_database_stats(self) -> Dict[str, Any]:
+        """Get statistics about the database contents."""
+        stats = {
+            "total_documents": 0,
+            "unprocessed_documents": 0,
+            "processed_documents": 0,
+            "document_changes": 0,
+            "average_text_length": 0,
+        }
+        
+        try:
+            with self.conn.cursor() as cursor:
+                # Get total document count
+                cursor.execute("SELECT COUNT(*) FROM raw_docs")
+                stats["total_documents"] = cursor.fetchone()[0]
+                
+                # Get processed and unprocessed counts
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE processed = TRUE")
+                stats["processed_documents"] = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE processed = FALSE")
+                stats["unprocessed_documents"] = cursor.fetchone()[0]
+                
+                # Get average text length
+                cursor.execute("SELECT AVG(LENGTH(raw_text)) FROM raw_docs")
+                avg_length = cursor.fetchone()[0]
+                if avg_length is not None:
+                    stats["average_text_length"] = int(avg_length)
+                
+                # Check for changes in the last 24 hours
+                cursor.execute("""
+                    SELECT COUNT(*) FROM raw_docs 
+                    WHERE processed = FALSE AND fetched_at > NOW() - INTERVAL '24 hours'
+                """)
+                stats["document_changes"] = cursor.fetchone()[0]
+                
+            return stats
+        except Exception as e:
+            logger.error(f"Error getting database stats: {str(e)}")
+            return stats
+
+    def run_tests(self) -> bool:
+        """Run tests to verify scraper functionality."""
+        logger.info("Running database tests to verify scraper functionality...")
+        try:
+            # Run the test_db.py script
+            result = subprocess.run(
+                ["python", "test_db.py"], 
+                capture_output=True, 
+                text=True
+            )
+            
+            # Check if the test was successful
+            if result.returncode == 0:
+                logger.info("Test completed successfully!")
+                logger.info(result.stdout)
+                
+                # Get and log database stats
+                stats = self.get_database_stats()
+                logger.info(f"Database stats: {json.dumps(stats)}")
+                
+                return True
+            else:
+                logger.error(f"Test failed with code {result.returncode}")
+                logger.error(result.stderr)
+                return False
+        except Exception as e:
+            logger.error(f"Error running tests: {str(e)}")
+            return False
+
     async def run_job(self) -> None:
         """Run the scraper job on all URLs in the links file."""
         logger.info(f"Starting scraper job at {datetime.now().isoformat()}")
@@ -228,6 +299,9 @@ class Scraper:
         # Log summary
         success_count = sum(1 for entry in log_entries if entry["status"] == "ok")
         logger.info(f"Completed processing {len(urls)} URLs: {success_count} successful, {len(urls) - success_count} failed")
+        
+        # Run tests to verify everything worked correctly
+        self.run_tests()
 
     async def start(self) -> None:
         """Start the scraper with a scheduled job."""

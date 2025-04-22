@@ -9,6 +9,8 @@ An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 - HTML to text conversion with BeautifulSoup
 - PostgreSQL storage with content change detection
 - Detailed logging
+- Web-based monitoring dashboard
+- Automatic testing and statistics tracking
 
 ## Configuration
 
@@ -92,8 +94,23 @@ python test_db.py --verbose
 This application is deployed on Heroku with:
 - PostgreSQL database add-on
 - Worker dyno for scheduled scraping
+- Web dyno for monitoring dashboard
 - Environment variables for configuration
 - URL: https://latvian-laws-06e89c613b8a.herokuapp.com/
+
+### Monitoring
+
+The application provides a simple monitoring dashboard:
+
+- **`/`**: Basic status page showing the application is online
+- **`/status`**: Detailed status information including:
+  - Database connection status
+  - Record counts
+  - Latest document fetched
+  - Recent scraper runs
+  - Document change statistics
+
+### Running Tests
 
 To run tests on Heroku:
 
