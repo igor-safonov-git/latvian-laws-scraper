@@ -25,10 +25,11 @@ def index():
 
 @app.route('/status')
 def status():
-    """Detailed status information about the scraper."""
+    """Detailed status information about the scraper and translator."""
     status_data = {
         "database": {"status": "unknown"},
         "scraper": {"status": "unknown"},
+        "translator": {"status": "unknown"},
         "latest_run": None
     }
     
@@ -104,15 +105,15 @@ def status():
         status_data["database"]["status"] = "error"
         status_data["database"]["error"] = str(e)
     
-    # Check log file for latest run
-    log_path = Path("./logs/scraper.log")
-    if log_path.exists():
+    # Check scraper log file for latest run
+    scraper_log_path = Path("./logs/scraper.log")
+    if scraper_log_path.exists():
         status_data["scraper"]["status"] = "logs_found"
         try:
             # Read the last few lines of the log to find latest run
-            with open(log_path, "r") as f:
+            with open(scraper_log_path, "r") as f:
                 # Get file size and seek near the end if it's large
-                f.seek(max(0, os.path.getsize(log_path) - 10000))
+                f.seek(max(0, os.path.getsize(scraper_log_path) - 10000))
                 # Skip partial line
                 if f.tell() > 0:
                     f.readline()
@@ -120,22 +121,65 @@ def status():
                 last_lines = f.readlines()
             
             # Parse JSON entries
-            entries = []
+            scraper_entries = []
             for line in last_lines:
                 try:
                     data = json.loads(line.strip())
                     if isinstance(data, dict) and "ts" in data:
-                        entries.append(data)
+                        scraper_entries.append(data)
                 except:
                     continue  # Skip non-JSON lines
             
-            if entries:
-                entries.sort(key=lambda x: x.get("ts", ""), reverse=True)
-                status_data["latest_run"] = entries[0]
+            if scraper_entries:
+                scraper_entries.sort(key=lambda x: x.get("ts", ""), reverse=True)
+                status_data["latest_run"] = scraper_entries[0]
         except Exception as e:
             status_data["scraper"]["log_error"] = str(e)
     else:
         status_data["scraper"]["status"] = "no_logs"
+        
+    # Check translator log file
+    translator_log_path = Path("./logs/translator.log")
+    if translator_log_path.exists():
+        status_data["translator"]["status"] = "logs_found"
+        try:
+            # Read the last few lines of the log to find latest translation
+            with open(translator_log_path, "r") as f:
+                # Get file size and seek near the end if it's large
+                f.seek(max(0, os.path.getsize(translator_log_path) - 10000))
+                # Skip partial line
+                if f.tell() > 0:
+                    f.readline()
+                # Read the last lines
+                last_lines = f.readlines()
+            
+            # Parse JSON entries
+            translator_entries = []
+            for line in last_lines:
+                try:
+                    data = json.loads(line.strip())
+                    if isinstance(data, dict) and "ts" in data:
+                        translator_entries.append(data)
+                except:
+                    continue  # Skip non-JSON lines
+            
+            if translator_entries:
+                translator_entries.sort(key=lambda x: x.get("ts", ""), reverse=True)
+                status_data["translator"]["latest_run"] = translator_entries[0]
+                
+                # Count successes and failures
+                success_count = sum(1 for entry in translator_entries if entry.get("status") == "ok")
+                error_count = sum(1 for entry in translator_entries if entry.get("status") == "error")
+                
+                status_data["translator"]["stats"] = {
+                    "successful_translations": success_count,
+                    "failed_translations": error_count,
+                    "total_attempts": len(translator_entries)
+                }
+        except Exception as e:
+            status_data["translator"]["log_error"] = str(e)
+    else:
+        status_data["translator"]["status"] = "no_logs"
     
     return jsonify(status_data)
 

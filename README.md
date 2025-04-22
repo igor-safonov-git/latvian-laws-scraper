@@ -83,10 +83,18 @@ python translator.py
 python test_db.py
 # For detailed output
 python test_db.py --verbose
+
+# Test the translator functionality
+python test_translator.py
+# For detailed output with translation samples
+python test_translator.py --verbose
+# To test a specific document's translation 
+python test_translator.py --check-one
 ```
 
 ## Testing
 
+### Testing the Scraper
 To verify that the scraper is working correctly, run the test script:
 
 ```bash
@@ -103,6 +111,31 @@ For more detailed output, use:
 
 ```bash
 python test_db.py --verbose
+```
+
+### Testing the Translator
+To verify that the translator is working correctly, run:
+
+```bash
+python test_translator.py
+```
+
+This will:
+- Check that the translated_text column exists
+- Verify that documents have been translated
+- Ensure that translated documents are marked as processed
+- Check for translation quality (length validation)
+
+For more detailed output with document samples:
+
+```bash
+python test_translator.py --verbose
+```
+
+To test translation for a specific document:
+
+```bash
+python test_translator.py --check-one
 ```
 
 ## Deployment

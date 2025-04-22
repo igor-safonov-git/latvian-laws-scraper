@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -223,6 +224,75 @@ class Translator:
         success_count = sum(1 for entry in log_entries if entry["status"] == "ok")
         logger.info(f"Completed processing {len(docs)} documents: {success_count} successful, {len(docs) - success_count} failed")
     
+    def run_tests(self) -> bool:
+        """Run tests to verify translator functionality."""
+        logger.info("Running translator tests to verify functionality...")
+        try:
+            # Run the test_translator.py script
+            result = subprocess.run(
+                ["python", "test_translator.py"], 
+                capture_output=True, 
+                text=True
+            )
+            
+            # Check if the test was successful
+            if result.returncode == 0:
+                logger.info("Translator tests completed successfully!")
+                logger.info(result.stdout)
+                return True
+            else:
+                logger.error(f"Translator tests failed with code {result.returncode}")
+                logger.error(result.stderr)
+                return False
+        except Exception as e:
+            logger.error(f"Error running translator tests: {str(e)}")
+            return False
+    
+    def get_translation_stats(self) -> Dict[str, Any]:
+        """Get statistics about translation progress."""
+        stats = {
+            "total_documents": 0,
+            "translated_documents": 0,
+            "untranslated_documents": 0,
+            "translation_percentage": 0,
+            "average_translation_length": 0,
+        }
+        
+        try:
+            with self.conn.cursor() as cursor:
+                # Get total document count
+                cursor.execute("SELECT COUNT(*) FROM raw_docs")
+                stats["total_documents"] = cursor.fetchone()[0]
+                
+                # Get translated document count
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE translated_text IS NOT NULL")
+                stats["translated_documents"] = cursor.fetchone()[0]
+                
+                # Get untranslated document count
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE translated_text IS NULL")
+                stats["untranslated_documents"] = cursor.fetchone()[0]
+                
+                # Calculate percentage
+                if stats["total_documents"] > 0:
+                    stats["translation_percentage"] = round(
+                        (stats["translated_documents"] / stats["total_documents"]) * 100, 2
+                    )
+                
+                # Get average translation length
+                cursor.execute("""
+                    SELECT AVG(LENGTH(translated_text)) 
+                    FROM raw_docs 
+                    WHERE translated_text IS NOT NULL
+                """)
+                avg_length = cursor.fetchone()[0]
+                if avg_length is not None:
+                    stats["average_translation_length"] = int(avg_length)
+                
+            return stats
+        except Exception as e:
+            logger.error(f"Error getting translation stats: {str(e)}")
+            return stats
+
     async def start(self) -> None:
         """Start the translator service with a polling interval."""
         self.setup()
@@ -232,11 +302,31 @@ class Translator:
         # Run job immediately on startup
         await self.run_job()
         
+        # Run initial tests
+        self.run_tests()
+        
         # Keep the script running with polling interval
         try:
+            # Track time since last test
+            last_test_time = time.time()
+            test_interval = 3600  # Run tests hourly
+            
             while True:
                 await asyncio.sleep(self.poll_interval)
                 await self.run_job()
+                
+                # Run tests periodically
+                current_time = time.time()
+                if current_time - last_test_time > test_interval:
+                    logger.info("Running periodic translator tests...")
+                    self.run_tests()
+                    
+                    # Log translation stats
+                    stats = self.get_translation_stats()
+                    logger.info(f"Translation stats: {json.dumps(stats)}")
+                    
+                    last_test_time = current_time
+                    
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down translator service")
 
