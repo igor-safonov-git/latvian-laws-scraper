@@ -9,9 +9,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Embedder: `python embedder.py`
   - Web: `python app.py`
 - Run tests:
+  - All tests: Run each test script separately
   - Scraper: `python test_db.py [-v/--verbose]`
   - Translator: `python test_translator.py [-v/--verbose] [--check-one]`
   - Embedder: `python test_embedder.py [-v/--verbose] [--sample]`
+  - Single test focus: Use the `--check-one` flag for translator tests
 - Deploy: `git push heroku main`
 - Dyno management:
   - Start/stop scraper: `heroku ps:scale scraper=1/0 --app latvian-laws`
@@ -20,17 +22,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Start/stop web: `heroku ps:scale web=1/0 --app latvian-laws`
 - Logs: `heroku logs --tail --app latvian-laws`
 - Database: `heroku pg:psql --app latvian-laws`
-- Linting: `flake8 *.py`
 
 ## Code Style Guidelines
 - Python: Follow PEP 8 with 4-space indentation, 88-char line limit
 - Naming: snake_case for variables/functions, PascalCase for classes
 - Imports: Group (1)stdlib (2)third-party (3)local, alpha-sorted
 - Type hints: Required for all function parameters and return values
-- Error handling: Use specific exceptions with meaningful error messages
+- Error handling: Use try/except with specific exceptions, log detailed errors
+- Logging: Use structured JSON logging with timestamp, status and relevant IDs
 - Async: Use aiohttp for HTTP, asyncio.gather for concurrency
 - Docstrings: Required for all functions and classes (Google-style)
 - Security: No hardcoded credentials, all secrets in env variables
+- Content change detection: Compare stripped content to avoid whitespace false positives
 
 ## Infrastructure
 - Heroku app: latvian-laws (EU region)
