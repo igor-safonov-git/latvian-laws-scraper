@@ -1,43 +1,71 @@
 # Latvian Laws Scraper
 
-An asynchronous scraper for Latvian legal documents.
+An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 
 ## Features
 
 - Scheduled scraping (daily at midnight UTC)
-- Asynchronous fetching for speed
-- HTML to text conversion
-- JSON output for each document
-- Detailed logging
+- Asynchronous fetching using aiohttp
+- HTML to text conversion with BeautifulSoup
+- PostgreSQL storage with asyncpg
+- Document change tracking
+- JSON logging
+
+## Configuration
+
+The application uses environment variables for configuration:
+
+- `DATABASE_URL`: PostgreSQL connection string (set automatically on Heroku)
+- `LINKS_FILE`: Path to a file containing URLs to scrape (default: `links.txt`)
+
+## Database Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS raw_docs (
+  id          TEXT PRIMARY KEY,
+  url         TEXT NOT NULL,
+  fetched_at  TIMESTAMPTZ NOT NULL,
+  raw_text    TEXT NOT NULL,
+  processed   BOOLEAN DEFAULT FALSE
+);
+```
+
+- `id`: SHA-256 hash of the URL
+- `url`: Source URL
+- `fetched_at`: Timestamp of retrieval
+- `raw_text`: Plain text extracted from HTML
+- `processed`: Flag indicating if the document has been processed
 
 ## Usage
 
 1. Add URLs to `links.txt` (one per line)
 2. The scraper will:
    - Run daily at 00:00 UTC
-   - Save raw text to `/data/raw/` in JSON format
-   - Log results to `/data/logs/`
+   - Fetch and parse each URL
+   - Store content in PostgreSQL database
+   - Log results to `./logs/scraper.log`
 
-## Setup
+## Local Development
 
 ```bash
+# Create a virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
 # Install dependencies
 pip install -r requirements.txt
+
+# Create .env file with configuration
+echo "LINKS_FILE=links.txt" > .env
 
 # Run the scraper
 python scraper.py
 ```
 
-## Data Format
-
-Each scraped document is saved as a JSON file with:
-- `url` - Source URL
-- `fetched_at` - Timestamp of retrieval
-- `raw_text` - Plain text extracted from HTML
-
 ## Deployment
 
 This application is deployed on Heroku with:
+- PostgreSQL database add-on
 - Worker dyno for scheduled scraping
-- Environment variables for API services
+- Environment variables for configuration
 - URL: https://latvian-laws-06e89c613b8a.herokuapp.com/

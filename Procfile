@@ -1,1 +1,1 @@
-web: echo "No active processes" && sleep infinity
+worker: python scraper.py
