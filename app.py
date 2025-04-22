@@ -44,20 +44,60 @@ def status():
             record_count = cursor.fetchone()[0]
             status_data["database"]["record_count"] = record_count
             
-            # Get latest record
+            # Check for translated_text column
             cursor.execute("""
-                SELECT url, fetched_at, LENGTH(raw_text) AS size
-                FROM raw_docs
-                ORDER BY fetched_at DESC
-                LIMIT 1
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'raw_docs' AND column_name = 'translated_text'
             """)
-            latest = cursor.fetchone()
-            if latest:
-                status_data["database"]["latest_record"] = {
-                    "url": latest[0],
-                    "fetched_at": latest[1].isoformat(),
-                    "size": latest[2]
-                }
+            has_translated_column = cursor.fetchone() is not None
+            
+            # Get translation stats if column exists
+            if has_translated_column:
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE translated_text IS NOT NULL")
+                translated_count = cursor.fetchone()[0]
+                status_data["database"]["translated_count"] = translated_count
+                
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE processed = TRUE")
+                processed_count = cursor.fetchone()[0]
+                status_data["database"]["processed_count"] = processed_count
+                
+                # Translation percentage
+                if record_count > 0:
+                    status_data["database"]["translation_percentage"] = round((translated_count / record_count) * 100, 2)
+            
+            # Get latest record
+            if has_translated_column:
+                cursor.execute("""
+                    SELECT url, fetched_at, LENGTH(raw_text) AS size, 
+                           processed, LENGTH(translated_text) AS translated_size
+                    FROM raw_docs
+                    ORDER BY fetched_at DESC
+                    LIMIT 1
+                """)
+                latest = cursor.fetchone()
+                if latest:
+                    status_data["database"]["latest_record"] = {
+                        "url": latest[0],
+                        "fetched_at": latest[1].isoformat(),
+                        "size": latest[2],
+                        "processed": latest[3],
+                        "translated_size": latest[4] if latest[4] else 0
+                    }
+            else:
+                cursor.execute("""
+                    SELECT url, fetched_at, LENGTH(raw_text) AS size
+                    FROM raw_docs
+                    ORDER BY fetched_at DESC
+                    LIMIT 1
+                """)
+                latest = cursor.fetchone()
+                if latest:
+                    status_data["database"]["latest_record"] = {
+                        "url": latest[0],
+                        "fetched_at": latest[1].isoformat(),
+                        "size": latest[2]
+                    }
                 
         conn.close()
     except Exception as e:

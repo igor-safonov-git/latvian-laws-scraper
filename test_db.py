@@ -70,6 +70,31 @@ def main():
                 sys.exit(1)
             else:
                 print("✅ Test passed: All records have content in raw_text field")
+                
+        # Test 3.5: Check for translated_text column
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'raw_docs' AND column_name = 'translated_text'
+            """)
+            has_translated_column = cursor.fetchone() is not None
+            
+            if not has_translated_column:
+                print("⚠️ Note: 'translated_text' column not found in raw_docs table")
+            else:
+                print("✅ Test passed: 'translated_text' column exists in raw_docs table")
+                
+                # If we have the column, check for translations
+                cursor.execute("""
+                    SELECT COUNT(*) FROM raw_docs 
+                    WHERE processed = TRUE AND translated_text IS NOT NULL
+                """)
+                translated_count = cursor.fetchone()[0]
+                total_count = record_count  # from previous test
+                
+                if translated_count > 0:
+                    print(f"✅ Info: {translated_count}/{total_count} records have been translated")
         
         # Test 4: Check URL uniqueness
         with conn.cursor() as cursor:
@@ -92,21 +117,50 @@ def main():
         # If verbose, display the scraped content information
         if args.verbose:
             with conn.cursor() as cursor:
+                # Check if translated_text column exists
                 cursor.execute("""
-                    SELECT id, url, fetched_at, 
-                           SUBSTRING(raw_text, 1, 50) || '...' AS text_preview,
-                           processed
-                    FROM raw_docs
-                    ORDER BY fetched_at DESC
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'raw_docs' AND column_name = 'translated_text'
                 """)
-                rows = cursor.fetchall()
+                has_translated_column = cursor.fetchone() is not None
                 
-                if rows:
-                    print("\nScraper Content:")
-                    headers = ["ID", "URL", "Fetched At", "Text Preview", "Processed"]
-                    print(tabulate(rows, headers=headers, tablefmt="grid"))
+                if has_translated_column:
+                    cursor.execute("""
+                        SELECT id, url, fetched_at, 
+                               SUBSTRING(raw_text, 1, 40) || '...' AS text_preview,
+                               processed,
+                               CASE WHEN translated_text IS NOT NULL 
+                                    THEN SUBSTRING(translated_text, 1, 40) || '...' 
+                                    ELSE NULL 
+                               END AS translation_preview
+                        FROM raw_docs
+                        ORDER BY fetched_at DESC
+                    """)
+                    rows = cursor.fetchall()
+                    
+                    if rows:
+                        print("\nContent:")
+                        headers = ["ID", "URL", "Fetched At", "Raw Text Preview", "Processed", "Translation Preview"]
+                        print(tabulate(rows, headers=headers, tablefmt="grid"))
+                    else:
+                        print("No content to display")
                 else:
-                    print("No content to display")
+                    cursor.execute("""
+                        SELECT id, url, fetched_at, 
+                               SUBSTRING(raw_text, 1, 50) || '...' AS text_preview,
+                               processed
+                        FROM raw_docs
+                        ORDER BY fetched_at DESC
+                    """)
+                    rows = cursor.fetchall()
+                    
+                    if rows:
+                        print("\nContent:")
+                        headers = ["ID", "URL", "Fetched At", "Text Preview", "Processed"]
+                        print(tabulate(rows, headers=headers, tablefmt="grid"))
+                    else:
+                        print("No content to display")
 
         print("\nAll tests passed! The scraper is working correctly.")
         
