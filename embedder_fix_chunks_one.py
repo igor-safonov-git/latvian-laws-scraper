@@ -89,6 +89,7 @@ class ChunkFixer:
     def split_into_chunks(self, text: str) -> List[str]:
         """
         Split text into overlapping chunks.
+        More memory-efficient implementation.
         Returns a list of text chunks suitable for embedding.
         """
         if not text:
@@ -101,9 +102,15 @@ class ChunkFixer:
         if text_length <= CHUNK_SIZE:
             return [text]
         
+        # Calculate number of chunks needed - this avoids appending to chunks list repeatedly
+        # which can be memory-intensive for very large documents
+        n_chunks = max(1, (text_length - CHUNK_OVERLAP) // (CHUNK_SIZE - CHUNK_OVERLAP) + 1)
+        chunks = [None] * n_chunks  # Pre-allocate chunks list
+        
         # Split into overlapping chunks
         start = 0
-        while start < text_length:
+        chunk_idx = 0
+        while start < text_length and chunk_idx < n_chunks:
             end = min(start + CHUNK_SIZE, text_length)
             
             # If this is not the last chunk, try to end at a paragraph or sentence boundary
@@ -118,13 +125,18 @@ class ChunkFixer:
                     if sentence_break != -1 and sentence_break > start + CHUNK_SIZE // 2:
                         end = sentence_break + 2  # Include the period and space
             
-            chunks.append(text[start:end])
+            chunks[chunk_idx] = text[start:end]
+            chunk_idx += 1
             
             # Move to next chunk with overlap
             start = end - CHUNK_OVERLAP
             # Ensure we make progress and don't get stuck
             if start >= text_length or start <= 0:
                 break
+        
+        # If we overestimated the number of chunks, truncate the array
+        if chunk_idx < n_chunks:
+            chunks = chunks[:chunk_idx]
         
         logger.info(f"Split text into {len(chunks)} chunks with {CHUNK_OVERLAP} char overlap")
         return chunks
@@ -195,6 +207,7 @@ class ChunkFixer:
         
     async def fix_document_chunks(self) -> bool:
         """Fix a single document that is missing chunks."""
+        import gc  # For garbage collection
         
         try:
             # Get document data
@@ -215,60 +228,89 @@ class ChunkFixer:
                 logger.warning(f"Document {self.document_id} not found or already has chunks")
                 return False
                 
-            logger.info(f"Processing document {doc['id']} ({doc['char_length']} chars) from URL {doc['url']}")
+            doc_id = doc['id']
+            url = doc['url']
+            fetched_at = doc['fetched_at']
+            char_length = doc['char_length']
+            logger.info(f"Processing document {doc_id} ({char_length} chars) from URL {url}")
             
-            # Split into chunks
+            # Extract text and free up the large doc dict
             text = doc["translated_text"]
+            doc = None  # Allow garbage collection
+            gc.collect()  # Force garbage collection
+            
+            # Split text into chunks - this is memory-intensive
+            logger.info("Splitting document into chunks")
             chunks = self.split_into_chunks(text)
+            text = None  # Allow garbage collection of the full text
+            gc.collect()  # Force garbage collection
             
             if not chunks:
-                logger.warning(f"Failed to create chunks for document {doc['id']}")
+                logger.warning(f"Failed to create chunks for document {doc_id}")
                 return False
             
-            # Process each chunk
-            async with aiohttp.ClientSession() as session:
-                chunk_success_count = 0
-                for i, chunk_text in enumerate(chunks):
-                    logger.info(f"Processing chunk {i+1}/{len(chunks)} for document {doc['id']}")
-                    
+            chunk_count = len(chunks)
+            logger.info(f"Processing {chunk_count} chunks one at a time")
+            
+            # Process each chunk individually
+            chunk_success_count = 0
+            for i in range(chunk_count):
+                # Create a new session for each chunk
+                logger.info(f"Processing chunk {i+1}/{chunk_count} for document {doc_id}")
+                
+                # Get chunk text and clear others to save memory
+                chunk_text = chunks[i]
+                
+                # Generate embedding for this chunk
+                async with aiohttp.ClientSession() as session:
                     # Generate embedding for this chunk
                     chunk_embedding = await self.generate_embedding(session, chunk_text)
-                    
-                    if not chunk_embedding:
-                        logger.error(f"Failed to generate embedding for chunk {i+1}")
-                        continue
-                    
-                    # Store chunk and its embedding
-                    chunk_id = self.compute_chunk_id(doc["id"], i)
-                    
-                    # Create metadata
-                    metadata = {
-                        "url": doc["url"],
-                        "fetched_at": doc["fetched_at"].isoformat() if isinstance(doc["fetched_at"], datetime) else doc["fetched_at"],
-                        "chunk_index": i,
-                        "chunk_length": len(chunk_text),
-                        "text_preview": chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text,
-                        "fixed": True
-                    }
-                    
-                    # Insert chunk
-                    with self.conn.cursor() as cursor:
-                        cursor.execute("""
-                            INSERT INTO doc_chunks(id, chunk_id, chunk_index, chunk_text, metadata, embedding)
-                            VALUES(%s, %s, %s, %s, %s, %s::vector)
-                            ON CONFLICT (chunk_id) DO NOTHING
-                        """, (
-                            doc["id"], chunk_id, i, chunk_text, json.dumps(metadata), chunk_embedding
-                        ))
-                        
-                    chunk_success_count += 1
                 
-                if chunk_success_count == len(chunks):
-                    logger.info(f"Successfully added {chunk_success_count} chunks for document {doc['id']}")
-                    return True
-                else:
-                    logger.warning(f"Partially fixed document {doc['id']}: {chunk_success_count}/{len(chunks)} chunks added")
-                    return chunk_success_count > 0
+                if not chunk_embedding:
+                    logger.error(f"Failed to generate embedding for chunk {i+1}")
+                    await asyncio.sleep(1)  # Brief pause
+                    continue
+                
+                # Store chunk and its embedding
+                chunk_id = self.compute_chunk_id(doc_id, i)
+                
+                # Create metadata
+                metadata = {
+                    "url": url,
+                    "fetched_at": fetched_at.isoformat() if isinstance(fetched_at, datetime) else fetched_at,
+                    "chunk_index": i,
+                    "chunk_length": len(chunk_text),
+                    "text_preview": chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text,
+                    "fixed": True
+                }
+                
+                # Insert chunk
+                with self.conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO doc_chunks(id, chunk_id, chunk_index, chunk_text, metadata, embedding)
+                        VALUES(%s, %s, %s, %s, %s, %s::vector)
+                        ON CONFLICT (chunk_id) DO NOTHING
+                    """, (
+                        doc_id, chunk_id, i, chunk_text, json.dumps(metadata), chunk_embedding
+                    ))
+                    
+                chunk_success_count += 1
+                
+                # Clear memory after each chunk
+                chunk_text = None
+                chunk_embedding = None
+                metadata = None
+                gc.collect()
+                
+                # Add a small delay between chunks to reduce memory pressure
+                await asyncio.sleep(2)
+            
+            if chunk_success_count == chunk_count:
+                logger.info(f"Successfully added {chunk_success_count} chunks for document {doc_id}")
+                return True
+            else:
+                logger.warning(f"Partially fixed document {doc_id}: {chunk_success_count}/{chunk_count} chunks added")
+                return chunk_success_count > 0
             
         except Exception as e:
             logger.error(f"Error fixing document chunks: {str(e)}")
