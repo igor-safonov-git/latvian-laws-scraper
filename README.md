@@ -82,10 +82,12 @@ CREATE TABLE IF NOT EXISTS docs (
    - Log translation results to the console and to a logfile
 4. The embedder will:
    - Run daily at 00:30 UTC (after translator completes)
-   - Check that all documents have been translated
-   - Clear previous embeddings
-   - Generate new embeddings using OpenAI API
-   - Store embeddings in the docs table for vector search
+   - Check for new or modified translations
+   - When new translations are found:
+     - Clear previous embeddings
+     - Generate new embeddings using OpenAI API
+     - Store embeddings in the docs table for vector search
+     - Record timestamp of successful run
    - Log embedding results to the console and to a logfile
 
 ## Local Development

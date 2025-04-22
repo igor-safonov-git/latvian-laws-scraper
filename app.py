@@ -259,6 +259,26 @@ def status():
                     cursor.execute("SELECT ARRAY_LENGTH(embedding, 1) FROM docs LIMIT 1")
                     dimensions = cursor.fetchone()[0]
                     status_data["embedder"]["dimensions"] = dimensions
+                
+                # Check for last embedding run timestamp
+                try:
+                    cursor.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_name = 'system_info'
+                        )
+                    """)
+                    if cursor.fetchone()[0]:
+                        cursor.execute("""
+                            SELECT metadata->>'last_embedding_run' 
+                            FROM system_info 
+                            WHERE id = 'embedder'
+                        """)
+                        last_run = cursor.fetchone()
+                        if last_run and last_run[0]:
+                            status_data["embedder"]["last_run"] = last_run[0]
+                except Exception:
+                    pass  # Don't fail if we can't get last run info
     except Exception as e:
         # Just log the error but don't fail
         print(f"Error getting embedder stats: {str(e)}")

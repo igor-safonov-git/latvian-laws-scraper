@@ -136,10 +136,10 @@ class Embedder:
             logger.error(f"Failed to set up database: {str(e)}")
             return False
             
-    def check_translator_completed(self) -> bool:
+    def check_new_translations(self) -> Tuple[bool, int]:
         """
-        Check if translator service has completed successfully.
-        Verifies that no documents are left untranslated.
+        Check if new translations are available since last embedder run.
+        Returns a tuple of (new_translations_available, total_translated_count).
         """
         try:
             with self.conn.cursor() as cursor:
@@ -152,7 +152,7 @@ class Embedder:
                 """)
                 if not cursor.fetchone()[0]:
                     logger.error("raw_docs table does not exist")
-                    return False
+                    return False, 0
                 
                 # Check for untranslated documents
                 cursor.execute("""
@@ -163,7 +163,7 @@ class Embedder:
                 
                 if untranslated_count > 0:
                     logger.warning(f"Found {untranslated_count} untranslated documents")
-                    return False
+                    return False, 0
                 
                 # Check if there are any documents at all
                 cursor.execute("SELECT COUNT(*) FROM raw_docs")
@@ -171,14 +171,98 @@ class Embedder:
                 
                 if total_count == 0:
                     logger.warning("No documents found in raw_docs table")
-                    return False
+                    return False, 0
                 
-                logger.info(f"Translator completed successfully: {total_count} documents translated")
-                return True
+                # Check if docs table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'docs'
+                    )
+                """)
+                docs_table_exists = cursor.fetchone()[0]
+                
+                # If docs table doesn't exist, we need to generate all embeddings
+                if not docs_table_exists:
+                    logger.info(f"First run: {total_count} documents need embeddings")
+                    return True, total_count
+                
+                # Check the count of documents in docs table
+                cursor.execute("SELECT COUNT(*) FROM docs")
+                embedding_count = cursor.fetchone()[0]
+                
+                # If counts don't match, we need to update
+                if embedding_count != total_count:
+                    logger.info(f"New translations found: {total_count} translated, {embedding_count} with embeddings")
+                    return True, total_count
+                
+                # Check for modified translations (processed flag should be false for modified docs)
+                cursor.execute("""
+                    SELECT MAX(fetched_at) FROM raw_docs
+                """)
+                latest_translation = cursor.fetchone()[0]
+                
+                if latest_translation:
+                    # Check if we have a record of the last embedding run
+                    try:
+                        cursor.execute("""
+                            SELECT metadata->>'last_embedding_run' FROM system_info LIMIT 1
+                        """)
+                        result = cursor.fetchone()
+                        if result and result[0]:
+                            last_run = datetime.fromisoformat(result[0])
+                            if latest_translation > last_run:
+                                logger.info(f"New translations since last run: latest at {latest_translation}")
+                                return True, total_count
+                    except Exception:
+                        # system_info table might not exist yet
+                        pass
+                
+                logger.info(f"No new translations found: {total_count} documents already have embeddings")
+                return False, total_count
                 
         except Exception as e:
-            logger.error(f"Error checking translator status: {str(e)}")
-            return False
+            logger.error(f"Error checking for new translations: {str(e)}")
+            return False, 0
+            
+    def update_last_run_timestamp(self) -> None:
+        """Record the timestamp of the last successful embedding run."""
+        try:
+            now = datetime.now(pytz.UTC)
+            
+            with self.conn.cursor() as cursor:
+                # Create system_info table if it doesn't exist
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS system_info (
+                        id TEXT PRIMARY KEY,
+                        metadata JSONB
+                    )
+                """)
+                
+                # Update or insert the last run timestamp
+                cursor.execute("""
+                    INSERT INTO system_info (id, metadata)
+                    VALUES ('embedder', jsonb_build_object('last_embedding_run', %s::text))
+                    ON CONFLICT (id) DO UPDATE
+                    SET metadata = jsonb_set(
+                        COALESCE(system_info.metadata, '{}'::jsonb),
+                        '{last_embedding_run}',
+                        to_jsonb(%s::text)
+                    )
+                """, (now.isoformat(), now.isoformat()))
+                
+                logger.info(f"Updated last embedding run timestamp to {now.isoformat()}")
+        except Exception as e:
+            logger.error(f"Error updating last run timestamp: {str(e)}")
+            
+    def check_translator_completed(self) -> bool:
+        """
+        Legacy method for backward compatibility.
+        Check if translator service has completed successfully.
+        Verifies that no documents are left untranslated.
+        """
+        ready, count = self.check_new_translations()
+        return ready and count > 0
     
     def get_translated_documents(self) -> List[Dict[str, Any]]:
         """Get all translated documents from the database."""
@@ -378,18 +462,23 @@ class Embedder:
     async def run_job(self) -> bool:
         """
         Run the embedder job on all translated documents.
-        1. Clear previous embeddings
-        2. Check translator completed
+        1. Check for new translations
+        2. If new translations found, clear previous embeddings
         3. Get all translated documents
         4. Generate and store embeddings
         """
         job_start = datetime.now(pytz.UTC)
         logger.info(f"Starting embedder job at {job_start.isoformat()}")
         
-        # Check if translator has completed
-        if not self.check_translator_completed():
-            logger.error("Translator has not completed successfully, skipping embedding job")
-            return False
+        # Check for new translations
+        new_translations_available, total_docs = self.check_new_translations()
+        
+        # If no new translations, skip the job
+        if not new_translations_available:
+            logger.info("No new translations found, skipping embedding generation")
+            return True
+            
+        logger.info(f"New translations detected, generating embeddings for {total_docs} documents")
         
         # Clear previous embeddings
         if not self.clear_embeddings():
@@ -435,6 +524,10 @@ class Embedder:
         job_duration = (job_end - job_start).total_seconds()
         logger.info(f"Completed embedding job in {job_duration:.2f} seconds: {success_count}/{len(docs)} successful, {len(docs) - success_count} failed")
         
+        # If any embeddings were successful, update the last run timestamp
+        if success_count > 0:
+            self.update_last_run_timestamp()
+            
         return success_count > 0
     
     async def start(self) -> None:
