@@ -38,8 +38,8 @@ class Embedder:
         self.database_url = os.getenv("DATABASE_URL")
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.max_tokens = int(os.getenv("MAX_TOKENS", "8192"))  # Default 8192 tokens
-        self.embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-        self.embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "512"))
+        self.embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+        self.embedding_dimensions = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
         
         # Check required configuration
         if not self.database_url:
