@@ -378,9 +378,12 @@ class Translator:
                 current_stripped = current_text.strip() if current_text else ""
                 previous_stripped = previous_raw_text.strip() if previous_raw_text else ""
                 
-                # Log the content difference for debugging
-                if previous_stripped != current_stripped:
-                    logger.info(f"Content comparison: previous={previous_stripped[:50]}, current={current_stripped[:50]}")
+                # Always log the content for debugging
+                logger.info(f"Content comparison for {doc_id}:")
+                logger.info(f"  - Previous text (first 50 chars): '{previous_stripped[:50]}'")
+                logger.info(f"  - Current text (first 50 chars): '{current_stripped[:50]}'")
+                logger.info(f"  - Previous length: {len(previous_stripped)}, Current length: {len(current_stripped)}")
+                logger.info(f"  - Are they identical: {previous_stripped == current_stripped}")
                 
                 # If content is identical (ignoring trailing/leading whitespace), don't translate again
                 if previous_stripped == current_stripped:
@@ -420,7 +423,8 @@ class Translator:
                     logger.warning(f"Document {doc_id} not found for update")
                     return False
                 
-                # Update the document with translation
+                # Update the document with translation and store the current raw_text
+                # for future content change detection
                 cursor.execute("""
                     UPDATE raw_docs
                     SET translated_text = %s, processed = TRUE
