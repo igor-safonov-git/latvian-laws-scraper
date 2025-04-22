@@ -484,31 +484,47 @@ def test_embedding_dimensions(conn, verbose: bool = False) -> List[Dict[str, Any
     dimensions = {}
     
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+        # For pgvector, we can check the table schema instead of using array_length
         # Check docs table dimensions
         cursor.execute("""
-            SELECT DISTINCT array_length(embedding, 1) as dimensions
-            FROM docs
-            LIMIT 10
+            SELECT a.atttypmod
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE c.relname = 'docs' 
+            AND a.attname = 'embedding'
+            AND n.nspname = 'public'
         """)
-        doc_dimensions = [row[0] for row in cursor.fetchall()]
+        docs_result = cursor.fetchone()
+        doc_dimensions = [docs_result[0] - 4] if docs_result else []  # pgvector stores dim+4 in atttypmod
         dimensions["docs"] = doc_dimensions
         
         # Check chunks table dimensions
         cursor.execute("""
-            SELECT DISTINCT array_length(embedding, 1) as dimensions
-            FROM doc_chunks
-            LIMIT 10
+            SELECT a.atttypmod
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE c.relname = 'doc_chunks' 
+            AND a.attname = 'embedding'
+            AND n.nspname = 'public'
         """)
-        chunk_dimensions = [row[0] for row in cursor.fetchall()]
+        chunks_result = cursor.fetchone()
+        chunk_dimensions = [chunks_result[0] - 4] if chunks_result else []  # pgvector stores dim+4 in atttypmod
         dimensions["chunks"] = chunk_dimensions
         
         # Check summaries table dimensions
         cursor.execute("""
-            SELECT DISTINCT array_length(embedding, 1) as dimensions
-            FROM doc_summaries
-            LIMIT 10
+            SELECT a.atttypmod
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE c.relname = 'doc_summaries' 
+            AND a.attname = 'embedding'
+            AND n.nspname = 'public'
         """)
-        summary_dimensions = [row[0] for row in cursor.fetchall()]
+        summaries_result = cursor.fetchone()
+        summary_dimensions = [summaries_result[0] - 4] if summaries_result else []  # pgvector stores dim+4 in atttypmod
         dimensions["summaries"] = summary_dimensions
         
         # Check if dimensions are consistent within each table
@@ -543,9 +559,9 @@ def test_embedding_dimensions(conn, verbose: bool = False) -> List[Dict[str, Any
                 "status": "Fail",
                 "details": f"Dimensions vary across tables: {all_dims}"
             })
-        elif len(all_dims) == 1:
+        elif len(all_dims) == 1 and all_dims:
             results.append({
-                "test": "Cross-Table Dimensions",
+                "test": "Cross-Table Dimensions", 
                 "status": "Pass",
                 "details": f"All tables use dimension: {list(all_dims)[0]}"
             })
