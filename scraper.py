@@ -6,11 +6,9 @@ import os
 import logging
 from bs4 import BeautifulSoup
 from datetime import datetime
-from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import asyncpg
 import pytz
-import urllib.parse as urlparse
+from pathlib import Path
 
 
 # Setup logging
@@ -22,59 +20,17 @@ logging.basicConfig(
 logger = logging.getLogger("scraper")
 
 
-async def get_db_pool():
-    """Get a connection pool to the PostgreSQL database."""
-    database_url = os.environ.get('DATABASE_URL')
-    if not database_url:
-        logger.error("DATABASE_URL environment variable not set")
-        return None
+def ensure_directories():
+    """Ensure that necessary directories exist."""
+    data_dir = Path("./data")
+    raw_dir = data_dir / "raw"
+    logs_dir = data_dir / "logs"
     
-    # Convert Heroku style postgres:// URLs to postgresql://
-    if database_url.startswith('postgres://'):
-        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    data_dir.mkdir(exist_ok=True)
+    raw_dir.mkdir(exist_ok=True)
+    logs_dir.mkdir(exist_ok=True)
     
-    try:
-        pool = await asyncpg.create_pool(database_url)
-        return pool
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {str(e)}")
-        return None
-
-
-async def setup_database(pool):
-    """Create necessary tables if they don't exist."""
-    if not pool:
-        return False
-    
-    try:
-        async with pool.acquire() as conn:
-            # Create law_texts table to store scraped data
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS law_texts (
-                    id SERIAL PRIMARY KEY,
-                    url TEXT NOT NULL,
-                    fetched_at TIMESTAMP NOT NULL,
-                    raw_text TEXT NOT NULL,
-                    UNIQUE(url, fetched_at)
-                )
-            """)
-            
-            # Create scrape_logs table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS scrape_logs (
-                    id SERIAL PRIMARY KEY,
-                    url TEXT NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    success BOOLEAN NOT NULL,
-                    message TEXT NOT NULL
-                )
-            """)
-            
-        logger.info("Database setup completed successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to setup database: {str(e)}")
-        return False
+    return raw_dir, logs_dir
 
 
 async def fetch_url(session, url):
@@ -111,85 +67,96 @@ def extract_text(html):
     return text
 
 
-async def log_result(pool, url, success, message):
-    """Log the result of processing a URL to the database."""
-    if not pool:
-        logger.error(f"Could not log result for {url}: Database connection failed")
-        return
+def log_result(logs_dir, url, success, message):
+    """Log the result of processing a URL to a JSON file."""
+    log_entry = {
+        "url": url,
+        "timestamp": datetime.now().isoformat(),
+        "success": success,
+        "message": message
+    }
     
+    # Create log filename based on the current date
+    log_file = logs_dir / f"scrape_log_{datetime.now().strftime('%Y-%m-%d')}.json"
+    
+    # Append to log file
     try:
-        async with pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO scrape_logs (url, timestamp, success, message)
-                VALUES ($1, $2, $3, $4)
-            """, url, datetime.now(), success, message)
-        
-        # Log to console as well
-        if success:
-            logger.info(f"SUCCESS: {url} - {message}")
+        if log_file.exists():
+            with open(log_file, "r", encoding="utf-8") as f:
+                try:
+                    logs = json.load(f)
+                except json.JSONDecodeError:
+                    logs = []
         else:
-            logger.error(f"FAILURE: {url} - {message}")
-    except Exception as e:
-        logger.error(f"Failed to log result to database: {str(e)}")
-
-
-async def save_to_database(pool, url, text):
-    """Save the scraped text to the database."""
-    if not pool:
-        logger.error(f"Could not save data for {url}: Database connection failed")
-        return False
-    
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO law_texts (url, fetched_at, raw_text)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (url, fetched_at) DO UPDATE 
-                SET raw_text = $3
-            """, url, datetime.now(), text)
+            logs = []
         
-        return True
+        logs.append(log_entry)
+        
+        with open(log_file, "w", encoding="utf-8") as f:
+            json.dump(logs, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Failed to save data to database: {str(e)}")
-        return False
+        logger.error(f"Error writing to log file: {str(e)}")
+    
+    # Log to console as well
+    if success:
+        logger.info(f"SUCCESS: {url} - {message}")
+    else:
+        logger.error(f"FAILURE: {url} - {message}")
 
 
-async def process_url(pool, session, url):
-    """Process a single URL: fetch, extract text, save to database."""
+def save_to_file(raw_dir, url, text):
+    """Save the scraped text to a JSON file."""
+    # Create output data
+    now = datetime.now().isoformat()
+    data = {
+        "url": url,
+        "fetched_at": now,
+        "raw_text": text
+    }
+    
+    # Generate filename based on URL and timestamp
+    url_safe = url.replace("://", "_").replace("/", "_").replace(".", "_")
+    filename = f"{url_safe}_{now.replace(':', '-')}.json"
+    filepath = raw_dir / filename
+    
+    # Save to file
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True, str(filepath)
+    except Exception as e:
+        logger.error(f"Failed to save data: {str(e)}")
+        return False, None
+
+
+async def process_url(raw_dir, logs_dir, session, url):
+    """Process a single URL: fetch, extract text, save to file."""
     logger.info(f"Processing {url}")
     
     html = await fetch_url(session, url)
     if not html:
-        await log_result(pool, url, False, "Failed to fetch URL")
+        log_result(logs_dir, url, False, "Failed to fetch URL")
         return
     
     text = extract_text(html)
     if not text:
-        await log_result(pool, url, False, "Failed to extract text")
+        log_result(logs_dir, url, False, "Failed to extract text")
         return
     
-    # Save to database
-    if await save_to_database(pool, url, text):
-        await log_result(pool, url, True, f"Saved to database")
+    # Save to file
+    success, filepath = save_to_file(raw_dir, url, text)
+    if success:
+        log_result(logs_dir, url, True, f"Saved to {filepath}")
     else:
-        await log_result(pool, url, False, "Failed to save to database")
+        log_result(logs_dir, url, False, "Failed to save to file")
 
 
 async def run_scraper():
     """Main function to run the scraper on all URLs."""
     logger.info("Starting scraper run")
     
-    # Get database connection pool
-    pool = await get_db_pool()
-    if not pool:
-        logger.error("Failed to create database connection pool, exiting")
-        return
-    
-    # Setup the database tables
-    if not await setup_database(pool):
-        logger.error("Failed to setup database, exiting")
-        await pool.close()
-        return
+    # Ensure directories exist
+    raw_dir, logs_dir = ensure_directories()
     
     # Read URLs from links.txt
     try:
@@ -197,18 +164,16 @@ async def run_scraper():
             urls = [line.strip() for line in f if line.strip()]
     except Exception as e:
         logger.error(f"Error reading links.txt: {str(e)}")
-        await pool.close()
         return
     
     logger.info(f"Found {len(urls)} URLs to process")
     
     # Process URLs concurrently
     async with aiohttp.ClientSession() as session:
-        tasks = [process_url(pool, session, url) for url in urls]
+        tasks = [process_url(raw_dir, logs_dir, session, url) for url in urls]
         await asyncio.gather(*tasks)
     
     logger.info("Scraper run completed")
-    await pool.close()
 
 
 def setup_scheduler():

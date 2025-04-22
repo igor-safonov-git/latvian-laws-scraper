@@ -1,13 +1,13 @@
 # Latvian Laws Scraper
 
-An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
+An asynchronous scraper for Latvian legal documents.
 
 ## Features
 
 - Scheduled scraping (daily at midnight UTC)
 - Asynchronous fetching for speed
 - HTML to text conversion
-- PostgreSQL database storage
+- JSON output for each document
 - Detailed logging
 
 ## Usage
@@ -15,8 +15,8 @@ An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 1. Add URLs to `links.txt` (one per line)
 2. The scraper will:
    - Run daily at 00:00 UTC
-   - Save raw text to PostgreSQL database
-   - Log results to PostgreSQL database
+   - Save raw text to `/data/raw/` in JSON format
+   - Log results to `/data/logs/`
 
 ## Setup
 
@@ -24,33 +24,20 @@ An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 # Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables
-export DATABASE_URL=your_postgres_connection_string
-
 # Run the scraper
 python scraper.py
 ```
 
-## Database Schema
+## Data Format
 
-Two tables are created automatically:
-
-1. `law_texts` - Stores the scraped content:
-   - id (SERIAL PRIMARY KEY)
-   - url (TEXT)
-   - fetched_at (TIMESTAMP)
-   - raw_text (TEXT)
-
-2. `scrape_logs` - Stores operation logs:
-   - id (SERIAL PRIMARY KEY)
-   - url (TEXT)
-   - timestamp (TIMESTAMP)
-   - success (BOOLEAN)
-   - message (TEXT)
+Each scraped document is saved as a JSON file with:
+- `url` - Source URL
+- `fetched_at` - Timestamp of retrieval
+- `raw_text` - Plain text extracted from HTML
 
 ## Deployment
 
 This application is deployed on Heroku with:
-- PostgreSQL database
-- Worker process for scheduled scraping
-- Environment variables for API keys
+- Worker dyno for scheduled scraping
+- Environment variables for API services
+- URL: https://latvian-laws-06e89c613b8a.herokuapp.com/
