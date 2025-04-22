@@ -8,8 +8,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import psycopg2
-from psycopg2.extras import Json
+import asyncpg
 import pytz
 import urllib.parse as urlparse
 
@@ -23,47 +22,34 @@ logging.basicConfig(
 logger = logging.getLogger("scraper")
 
 
-def get_db_connection():
-    """Get a connection to the PostgreSQL database."""
-    url = os.environ.get('DATABASE_URL')
-    if not url:
+async def get_db_pool():
+    """Get a connection pool to the PostgreSQL database."""
+    database_url = os.environ.get('DATABASE_URL')
+    if not database_url:
         logger.error("DATABASE_URL environment variable not set")
         return None
     
+    # Convert Heroku style postgres:// URLs to postgresql://
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    
     try:
-        # Parse the connection URL
-        result = urlparse.urlparse(url)
-        username = result.username
-        password = result.password
-        database = result.path[1:]
-        hostname = result.hostname
-        port = result.port
-        
-        # Connect to the database
-        connection = psycopg2.connect(
-            database=database,
-            user=username,
-            password=password,
-            host=hostname,
-            port=port
-        )
-        connection.autocommit = True
-        return connection
+        pool = await asyncpg.create_pool(database_url)
+        return pool
     except Exception as e:
         logger.error(f"Failed to connect to database: {str(e)}")
         return None
 
 
-def setup_database():
+async def setup_database(pool):
     """Create necessary tables if they don't exist."""
-    connection = get_db_connection()
-    if not connection:
+    if not pool:
         return False
     
     try:
-        with connection.cursor() as cursor:
+        async with pool.acquire() as conn:
             # Create law_texts table to store scraped data
-            cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS law_texts (
                     id SERIAL PRIMARY KEY,
                     url TEXT NOT NULL,
@@ -74,7 +60,7 @@ def setup_database():
             """)
             
             # Create scrape_logs table
-            cursor.execute("""
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS scrape_logs (
                     id SERIAL PRIMARY KEY,
                     url TEXT NOT NULL,
@@ -89,8 +75,6 @@ def setup_database():
     except Exception as e:
         logger.error(f"Failed to setup database: {str(e)}")
         return False
-    finally:
-        connection.close()
 
 
 async def fetch_url(session, url):
@@ -127,19 +111,18 @@ def extract_text(html):
     return text
 
 
-def log_result(url, success, message):
+async def log_result(pool, url, success, message):
     """Log the result of processing a URL to the database."""
-    connection = get_db_connection()
-    if not connection:
+    if not pool:
         logger.error(f"Could not log result for {url}: Database connection failed")
         return
     
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
+        async with pool.acquire() as conn:
+            await conn.execute("""
                 INSERT INTO scrape_logs (url, timestamp, success, message)
-                VALUES (%s, %s, %s, %s)
-            """, (url, datetime.now(), success, message))
+                VALUES ($1, $2, $3, $4)
+            """, url, datetime.now(), success, message)
         
         # Log to console as well
         if success:
@@ -148,58 +131,65 @@ def log_result(url, success, message):
             logger.error(f"FAILURE: {url} - {message}")
     except Exception as e:
         logger.error(f"Failed to log result to database: {str(e)}")
-    finally:
-        connection.close()
 
 
-def save_to_database(url, text):
+async def save_to_database(pool, url, text):
     """Save the scraped text to the database."""
-    connection = get_db_connection()
-    if not connection:
+    if not pool:
         logger.error(f"Could not save data for {url}: Database connection failed")
         return False
     
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
+        async with pool.acquire() as conn:
+            await conn.execute("""
                 INSERT INTO law_texts (url, fetched_at, raw_text)
-                VALUES (%s, %s, %s)
+                VALUES ($1, $2, $3)
                 ON CONFLICT (url, fetched_at) DO UPDATE 
-                SET raw_text = EXCLUDED.raw_text
-            """, (url, datetime.now(), text))
+                SET raw_text = $3
+            """, url, datetime.now(), text)
         
         return True
     except Exception as e:
         logger.error(f"Failed to save data to database: {str(e)}")
         return False
-    finally:
-        connection.close()
 
 
-async def process_url(session, url):
+async def process_url(pool, session, url):
     """Process a single URL: fetch, extract text, save to database."""
     logger.info(f"Processing {url}")
     
     html = await fetch_url(session, url)
     if not html:
-        log_result(url, False, "Failed to fetch URL")
+        await log_result(pool, url, False, "Failed to fetch URL")
         return
     
     text = extract_text(html)
     if not text:
-        log_result(url, False, "Failed to extract text")
+        await log_result(pool, url, False, "Failed to extract text")
         return
     
     # Save to database
-    if save_to_database(url, text):
-        log_result(url, True, f"Saved to database")
+    if await save_to_database(pool, url, text):
+        await log_result(pool, url, True, f"Saved to database")
     else:
-        log_result(url, False, "Failed to save to database")
+        await log_result(pool, url, False, "Failed to save to database")
 
 
 async def run_scraper():
     """Main function to run the scraper on all URLs."""
     logger.info("Starting scraper run")
+    
+    # Get database connection pool
+    pool = await get_db_pool()
+    if not pool:
+        logger.error("Failed to create database connection pool, exiting")
+        return
+    
+    # Setup the database tables
+    if not await setup_database(pool):
+        logger.error("Failed to setup database, exiting")
+        await pool.close()
+        return
     
     # Read URLs from links.txt
     try:
@@ -207,16 +197,18 @@ async def run_scraper():
             urls = [line.strip() for line in f if line.strip()]
     except Exception as e:
         logger.error(f"Error reading links.txt: {str(e)}")
+        await pool.close()
         return
     
     logger.info(f"Found {len(urls)} URLs to process")
     
     # Process URLs concurrently
     async with aiohttp.ClientSession() as session:
-        tasks = [process_url(session, url) for url in urls]
+        tasks = [process_url(pool, session, url) for url in urls]
         await asyncio.gather(*tasks)
     
     logger.info("Scraper run completed")
+    await pool.close()
 
 
 def setup_scheduler():
@@ -229,11 +221,6 @@ def setup_scheduler():
 
 async def main():
     """Main entry point for the application."""
-    # Setup the database first
-    if not setup_database():
-        logger.error("Failed to setup database, exiting")
-        return
-    
     # Setup the scheduler
     scheduler = setup_scheduler()
     scheduler.start()
