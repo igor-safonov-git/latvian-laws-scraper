@@ -3,6 +3,7 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 import json
+import os
 from datetime import datetime
 
 async def fetch_url(session, url):
@@ -72,10 +73,34 @@ async def main():
         print("Success! First 100 characters of text:")
         print(result["raw_text"][:100])
         
-        # Save to file
-        with open("example_result.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        print("Saved to example_result.json")
+        # Print current working directory 
+        print(f"Current directory: {os.getcwd()}")
+        
+        # Try several locations
+        locations = ['/', './tmp', '/tmp', '.', './data', '/app/tmp']
+        
+        for location in locations:
+            try:
+                if not os.path.exists(location):
+                    try:
+                        os.makedirs(location, exist_ok=True)
+                        print(f"Created directory: {location}")
+                    except Exception as e:
+                        print(f"Failed to create directory {location}: {e}")
+                        continue
+                
+                filename = os.path.join(location, "example_result.json")
+                with open(filename, "w", encoding="utf-8") as f:
+                    json.dump(result, f, ensure_ascii=False, indent=2)
+                print(f"Successfully saved to {filename}")
+                
+                # Try to read it back
+                if os.path.exists(filename):
+                    print(f"File exists at {filename}")
+                    with open(filename, "r", encoding="utf-8") as f:
+                        print(f"File contents start with: {f.read(50)}...")
+            except Exception as e:
+                print(f"Failed to write to {location}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
