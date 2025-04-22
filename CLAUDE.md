@@ -3,16 +3,16 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
-- Run services:
+- Run services (Heroku only):
   - Scraper: `python scraper.py`
   - Translator: `python translator.py`
   - Embedder: `python embedder.py`
   - Web: `python app.py`
-- Run tests:
-  - All tests: Run each test script separately
-  - Scraper: `python test_db.py [-v/--verbose]`
-  - Translator: `python test_translator.py [-v/--verbose] [--check-one]`
-  - Embedder: `python test_embedder.py [-v/--verbose] [--sample]`
+- Run tests (Heroku only, never locally):
+  - All tests: Run each test script separately on Heroku
+  - Scraper: `heroku run python test_db.py [-v/--verbose] --app latvian-laws`
+  - Translator: `heroku run python test_translator.py [-v/--verbose] [--check-one] --app latvian-laws`
+  - Embedder: `heroku run python test_embedder.py [-v/--verbose] [--sample] --app latvian-laws`
   - Single test focus: Use the `--check-one` flag for translator tests
 - Deploy: `git push heroku main`
 - Dyno management:
