@@ -88,37 +88,118 @@ class Translator:
             logger.error(f"Failed to set up database: {str(e)}")
             sys.exit(1)
 
-    async def translate_text(self, session: aiohttp.ClientSession, text: str) -> Optional[str]:
-        """Translate text from Latvian to English using DeepL API."""
-        try:
-            headers = {
-                "Authorization": f"DeepL-Auth-Key {self.deepl_api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "text": [text],
-                "source_lang": "LV",  # Latvian
-                "target_lang": "EN",  # English
-            }
-            
-            async with session.post(
-                self.translate_url, 
-                headers=headers, 
-                json=data,
-                timeout=120  # Long timeout for large documents
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation failed: HTTP {response.status} - {error_text}")
-                    return None
-                
-                result = await response.json()
-                if "translations" in result and len(result["translations"]) > 0:
-                    return result["translations"][0]["text"]
+    def split_text_into_chunks(self, text: str, max_chunk_size: int = 5000) -> List[str]:
+        """
+        Split text into chunks that won't exceed DeepL's size limit.
+        DeepL has a maximum request size, so we need to split long texts.
+        We'll try to split at paragraph boundaries to maintain context.
+        """
+        # If text is small enough, return it as a single chunk
+        if len(text) <= max_chunk_size:
+            return [text]
+        
+        chunks = []
+        paragraphs = text.split('\n\n')
+        current_chunk = ""
+        
+        for paragraph in paragraphs:
+            # If adding this paragraph would exceed max size, save current chunk and start a new one
+            if len(current_chunk) + len(paragraph) + 2 > max_chunk_size:
+                # If a single paragraph is too large, we need to split it further
+                if not current_chunk and len(paragraph) > max_chunk_size:
+                    # Split paragraph by sentences (approximated by periods followed by space)
+                    sentences = paragraph.replace('. ', '.\n').split('\n')
+                    sentence_chunk = ""
+                    
+                    for sentence in sentences:
+                        if len(sentence_chunk) + len(sentence) + 1 > max_chunk_size:
+                            if sentence_chunk:
+                                chunks.append(sentence_chunk)
+                                sentence_chunk = sentence
+                            else:
+                                # Even a single sentence is too long, split by character
+                                for i in range(0, len(sentence), max_chunk_size):
+                                    chunks.append(sentence[i:i+max_chunk_size])
+                        else:
+                            if sentence_chunk:
+                                sentence_chunk += " " + sentence
+                            else:
+                                sentence_chunk = sentence
+                    
+                    if sentence_chunk:
+                        chunks.append(sentence_chunk)
                 else:
-                    logger.error(f"Invalid translation response: {result}")
-                    return None
+                    # Save the current chunk and start a new one with this paragraph
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = paragraph
+            else:
+                # Add paragraph to the current chunk
+                if current_chunk:
+                    current_chunk += "\n\n" + paragraph
+                else:
+                    current_chunk = paragraph
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            chunks.append(current_chunk)
+            
+        logger.info(f"Split text into {len(chunks)} chunks (original size: {len(text)} chars)")
+        return chunks
+
+    async def translate_text(self, session: aiohttp.ClientSession, text: str) -> Optional[str]:
+        """Translate text from Latvian to English using DeepL API with chunking for large texts."""
+        try:
+            # Split text into manageable chunks
+            chunks = self.split_text_into_chunks(text)
+            
+            # If we have multiple chunks, log it
+            if len(chunks) > 1:
+                logger.info(f"Translating document in {len(chunks)} chunks due to size")
+            
+            translated_chunks = []
+            
+            # Process each chunk
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Translating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+                
+                headers = {
+                    "Authorization": f"DeepL-Auth-Key {self.deepl_api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                data = {
+                    "text": [chunk],
+                    "source_lang": "LV",  # Latvian
+                    "target_lang": "EN",  # English
+                }
+                
+                # Add small delay between chunks to avoid rate limiting
+                if i > 0:
+                    await asyncio.sleep(1)
+                
+                async with session.post(
+                    self.translate_url, 
+                    headers=headers, 
+                    json=data,
+                    timeout=60  # Shorter timeout for smaller chunks
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Translation failed for chunk {i+1}: HTTP {response.status} - {error_text}")
+                        return None
+                    
+                    result = await response.json()
+                    if "translations" in result and len(result["translations"]) > 0:
+                        translated_chunks.append(result["translations"][0]["text"])
+                    else:
+                        logger.error(f"Invalid translation response for chunk {i+1}: {result}")
+                        return None
+            
+            # Join all translated chunks
+            full_translation = "\n\n".join(translated_chunks)
+            return full_translation
+            
         except Exception as e:
             logger.error(f"Error translating text: {str(e)}")
             return None
@@ -166,24 +247,32 @@ class Translator:
         """Process a single document: translate and update database."""
         doc_id = doc["id"]
         url = doc["url"]
+        raw_text = doc["raw_text"]
+        raw_text_size = len(raw_text) if raw_text else 0
         now = datetime.now(pytz.UTC)
         
         log_entry = {
             "ts": now.isoformat(),
             "id": doc_id,
             "url": url,
+            "size": raw_text_size,
             "status": "error",
             "error": None
         }
         
         try:
             # Translate text
-            logger.info(f"Translating document {doc_id} from URL {url}")
-            translated_text = await self.translate_text(session, doc["raw_text"])
+            logger.info(f"Translating document {doc_id} from URL {url} ({raw_text_size} chars)")
+            translated_text = await self.translate_text(session, raw_text)
             
             if not translated_text:
                 log_entry["error"] = "Translation failed"
                 return log_entry
+            
+            # Log translation size
+            translated_size = len(translated_text)
+            log_entry["translated_size"] = translated_size
+            logger.info(f"Translation complete: {translated_size} chars (ratio: {translated_size/raw_text_size:.2f}x)")
             
             # Update document with translation
             if self.update_doc(doc_id, translated_text):
