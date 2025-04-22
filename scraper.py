@@ -6,11 +6,12 @@ import json
 import logging
 import os
 import sys
+import psycopg2
+import psycopg2.extras
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 
-import asyncpg
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -47,32 +48,25 @@ class Scraper:
             logger.error(f"Links file not found: {self.links_file}")
             sys.exit(1)
         
-        # Initialize database connection pool
-        self.db_pool = None
+        # Initialize database connection
+        self.conn = None
         
         # Ensure logs directory exists
         self.logs_dir = Path("./logs")
         self.logs_dir.mkdir(exist_ok=True)
         self.log_file = self.logs_dir / "scraper.log"
 
-    async def setup(self) -> None:
+    def setup(self) -> None:
         """Set up the necessary connections and database tables."""
-        # Convert Heroku-style postgres:// URLs to postgresql://
-        if self.database_url.startswith("postgres://"):
-            self.database_url = self.database_url.replace("postgres://", "postgresql://", 1)
-        
-        # Create database connection pool
         try:
-            self.db_pool = await asyncpg.create_pool(self.database_url)
+            # Connect to database
+            self.conn = psycopg2.connect(self.database_url)
+            self.conn.autocommit = True
             logger.info("Connected to PostgreSQL database")
-        except Exception as e:
-            logger.error(f"Failed to connect to database: {str(e)}")
-            sys.exit(1)
-        
-        # Create table if it doesn't exist
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.execute("""
+            
+            # Create table if it doesn't exist
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
                     CREATE TABLE IF NOT EXISTS raw_docs (
                         id          TEXT PRIMARY KEY,
                         url         TEXT NOT NULL,
@@ -83,7 +77,7 @@ class Scraper:
                 """)
             logger.info("Database tables prepared")
         except Exception as e:
-            logger.error(f"Failed to create database tables: {str(e)}")
+            logger.error(f"Failed to set up database: {str(e)}")
             sys.exit(1)
 
     async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
@@ -126,6 +120,46 @@ class Scraper:
         """Compute a SHA-256 hash of the URL to use as ID."""
         return hashlib.sha256(url.encode()).hexdigest()
 
+    def save_to_database(self, doc_id: str, url: str, text: str, timestamp: datetime) -> bool:
+        """Save document to database."""
+        try:
+            # Check if we already have this document with the same content
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT raw_text FROM raw_docs WHERE id = %s",
+                    (doc_id,)
+                )
+                existing_doc = cursor.fetchone()
+            
+            # Determine if we need to mark as unprocessed
+            content_changed = True
+            if existing_doc and existing_doc[0] == text:
+                content_changed = False
+            
+            # Insert or update the document
+            with self.conn.cursor() as cursor:
+                if content_changed:
+                    cursor.execute("""
+                        INSERT INTO raw_docs(id, url, fetched_at, raw_text, processed)
+                        VALUES(%s, %s, %s, %s, FALSE)
+                        ON CONFLICT (id) DO UPDATE
+                        SET raw_text = EXCLUDED.raw_text,
+                            fetched_at = EXCLUDED.fetched_at,
+                            processed = FALSE
+                    """, (doc_id, url, timestamp, text))
+                else:
+                    cursor.execute("""
+                        INSERT INTO raw_docs(id, url, fetched_at, raw_text, processed)
+                        VALUES(%s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET fetched_at = EXCLUDED.fetched_at
+                    """, (doc_id, url, timestamp, text, existing_doc is not None))
+            
+            return True
+        except Exception as e:
+            logger.error(f"Database error: {str(e)}")
+            return False
+
     async def process_url(self, session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
         """Process a single URL: fetch, extract text, save to database."""
         logger.info(f"Processing {url}")
@@ -154,40 +188,10 @@ class Scraper:
             doc_id = self.compute_id(url)
             
             # Save to database
-            try:
-                async with self.db_pool.acquire() as conn:
-                    # First check if we already have this document with the same content
-                    existing_doc = await conn.fetchrow(
-                        "SELECT raw_text FROM raw_docs WHERE id = $1",
-                        doc_id
-                    )
-                    
-                    # Determine if we need to mark as unprocessed
-                    content_changed = True
-                    if existing_doc and existing_doc["raw_text"] == text:
-                        content_changed = False
-                    
-                    # Insert or update the document
-                    if content_changed:
-                        await conn.execute("""
-                            INSERT INTO raw_docs(id, url, fetched_at, raw_text, processed)
-                            VALUES($1, $2, $3, $4, FALSE)
-                            ON CONFLICT (id) DO UPDATE
-                            SET raw_text = EXCLUDED.raw_text,
-                                fetched_at = EXCLUDED.fetched_at,
-                                processed = FALSE
-                        """, doc_id, url, now, text)
-                    else:
-                        await conn.execute("""
-                            INSERT INTO raw_docs(id, url, fetched_at, raw_text, processed)
-                            VALUES($1, $2, $3, $4, $5)
-                            ON CONFLICT (id) DO UPDATE
-                            SET fetched_at = EXCLUDED.fetched_at
-                        """, doc_id, url, now, text, existing_doc is not None)
-                    
+            if self.save_to_database(doc_id, url, text, now):
                 log_entry["status"] = "ok"
-            except Exception as e:
-                log_entry["error"] = f"Database error: {str(e)}"
+            else:
+                log_entry["error"] = "Failed to save to database"
                 
         except Exception as e:
             log_entry["error"] = f"Unexpected error: {str(e)}"
@@ -227,7 +231,7 @@ class Scraper:
 
     async def start(self) -> None:
         """Start the scraper with a scheduled job."""
-        await self.setup()
+        self.setup()
         
         # Set up scheduler
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
@@ -245,10 +249,6 @@ class Scraper:
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down scheduler")
             scheduler.shutdown()
-            
-            # Close database connection pool
-            if self.db_pool:
-                await self.db_pool.close()
 
 
 async def main() -> None:
