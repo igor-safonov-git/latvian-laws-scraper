@@ -309,23 +309,92 @@ class Translator:
             return None
     
     def get_untranslated_docs(self) -> List[Dict[str, Any]]:
-        """Get a batch of untranslated documents from the database."""
+        """
+        Get a batch of untranslated documents from the database.
+        Only returns documents that:
+        1. Have processed = FALSE (either new or content changed)
+        2. Have raw_text that's not NULL
+        """
         try:
             with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # First check if we have documents that need translation
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM raw_docs
+                    WHERE processed = FALSE AND raw_text IS NOT NULL
+                """)
+                count = cursor.fetchone()[0]
+                
+                if count == 0:
+                    logger.info("No untranslated documents found")
+                    return []
+                
+                # Get documents that need translation
                 cursor.execute(f"""
                     SELECT id, url, raw_text, fetched_at
                     FROM raw_docs
                     WHERE processed = FALSE AND raw_text IS NOT NULL
+                    ORDER BY fetched_at DESC
                     LIMIT {self.batch_size}
                 """)
                 
                 # Convert to list of dicts
                 docs = [dict(row) for row in cursor.fetchall()]
                 logger.info(f"Found {len(docs)} untranslated documents")
+                
+                # Log document ids and urls for clarity
+                for doc in docs:
+                    logger.info(f"Document requiring translation: {doc['id']} - {doc['url']}")
+                
                 return docs
         except Exception as e:
             logger.error(f"Error fetching untranslated documents: {str(e)}")
             return []
+            
+    def check_content_changed(self, doc_id: str, current_text: str) -> bool:
+        """
+        Check if the content has actually changed compared to the previous version.
+        This is a double-check in case the processed flag was reset but content is identical.
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                # Check if we have a previous translation for this document
+                cursor.execute("""
+                    SELECT translated_text, raw_text
+                    FROM raw_docs
+                    WHERE id = %s
+                """, (doc_id,))
+                
+                result = cursor.fetchone()
+                if not result or not result[0]:
+                    # No previous translation, so yes, we need to translate
+                    logger.info(f"Document {doc_id} has no previous translation")
+                    return True
+                
+                # We have a previous translation, check if content is identical to what we have
+                previous_raw_text = result[1] if len(result) > 1 else None
+                
+                if previous_raw_text == current_text:
+                    # Content is identical to what was previously translated
+                    logger.info(f"Document {doc_id} content is unchanged from previous translation")
+                    
+                    # Update the processed flag to avoid reprocessing
+                    cursor.execute("""
+                        UPDATE raw_docs
+                        SET processed = TRUE
+                        WHERE id = %s
+                    """, (doc_id,))
+                    
+                    return False
+                else:
+                    # Content has changed, needs new translation
+                    logger.info(f"Document {doc_id} content has changed and needs new translation")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"Error checking content changes for {doc_id}: {str(e)}")
+            # Default to translating in case of error
+            return True
     
     def update_doc(self, doc_id: str, translated_text: str) -> bool:
         """Update document with translated text and mark as processed."""
@@ -365,6 +434,13 @@ class Translator:
         }
         
         try:
+            # Check if content has actually changed since last translation
+            if not self.check_content_changed(doc_id, raw_text):
+                logger.info(f"Skipping translation for document {doc_id} - content unchanged")
+                log_entry["status"] = "skipped"
+                log_entry["reason"] = "content unchanged"
+                return log_entry
+            
             # Translate text
             logger.info(f"Translating document {doc_id} from URL {url} ({raw_text_size} chars)")
             translated_text = await self.translate_text(session, raw_text)
@@ -415,7 +491,10 @@ class Translator:
         
         # Log summary
         success_count = sum(1 for entry in log_entries if entry["status"] == "ok")
-        logger.info(f"Completed processing {len(docs)} documents: {success_count} successful, {len(docs) - success_count} failed")
+        skipped_count = sum(1 for entry in log_entries if entry["status"] == "skipped")
+        failed_count = len(docs) - success_count - skipped_count
+        
+        logger.info(f"Completed processing {len(docs)} documents: {success_count} successful, {skipped_count} skipped (unchanged), {failed_count} failed")
     
     def run_tests(self) -> bool:
         """Run tests to verify translator functionality."""
@@ -447,6 +526,8 @@ class Translator:
             "total_documents": 0,
             "translated_documents": 0,
             "untranslated_documents": 0,
+            "pending_documents": 0,  # Docs that need translation (processed=FALSE)
+            "skipped_documents": 0,  # Docs marked for processing but content unchanged
             "translation_percentage": 0,
             "average_translation_length": 0,
         }
@@ -464,6 +545,26 @@ class Translator:
                 # Get untranslated document count
                 cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE translated_text IS NULL")
                 stats["untranslated_documents"] = cursor.fetchone()[0]
+                
+                # Get pending document count (marked for processing)
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE processed = FALSE")
+                stats["pending_documents"] = cursor.fetchone()[0]
+                
+                # Estimate skipped documents (since we don't store this permanently)
+                # This is the number of docs that were marked for processing
+                # but already had a translation and unchanged content
+                cursor.execute("""
+                    SELECT COUNT(*) FROM raw_docs 
+                    WHERE translated_text IS NOT NULL 
+                    AND processed = TRUE 
+                    AND id IN (
+                        SELECT id FROM raw_docs 
+                        WHERE processed = FALSE 
+                        ORDER BY fetched_at DESC 
+                        LIMIT 100
+                    )
+                """)
+                stats["skipped_documents"] = cursor.fetchone()[0]
                 
                 # Calculate percentage
                 if stats["total_documents"] > 0:

@@ -64,9 +64,31 @@ def status():
                 processed_count = cursor.fetchone()[0]
                 status_data["database"]["processed_count"] = processed_count
                 
+                cursor.execute("SELECT COUNT(*) FROM raw_docs WHERE processed = FALSE")
+                pending_count = cursor.fetchone()[0]
+                status_data["database"]["pending_count"] = pending_count
+                
                 # Translation percentage
                 if record_count > 0:
                     status_data["database"]["translation_percentage"] = round((translated_count / record_count) * 100, 2)
+                    
+                # Try to get information about recently skipped documents
+                try:
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM raw_docs 
+                        WHERE translated_text IS NOT NULL 
+                        AND processed = TRUE 
+                        AND id IN (
+                            SELECT id FROM raw_docs 
+                            WHERE processed = FALSE 
+                            ORDER BY fetched_at DESC 
+                            LIMIT 100
+                        )
+                    """)
+                    status_data["database"]["recently_skipped_count"] = cursor.fetchone()[0]
+                except Exception:
+                    # This is an optional metric, don't fail if it's not available
+                    pass
             
             # Get latest record
             if has_translated_column:
@@ -168,13 +190,15 @@ def status():
                 translator_entries.sort(key=lambda x: x.get("ts", ""), reverse=True)
                 status_data["translator"]["latest_run"] = translator_entries[0]
                 
-                # Count successes and failures
+                # Count successes, failures, and skipped
                 success_count = sum(1 for entry in translator_entries if entry.get("status") == "ok")
                 error_count = sum(1 for entry in translator_entries if entry.get("status") == "error")
+                skipped_count = sum(1 for entry in translator_entries if entry.get("status") == "skipped")
                 
                 status_data["translator"]["stats"] = {
                     "successful_translations": success_count,
                     "failed_translations": error_count,
+                    "skipped_translations": skipped_count,
                     "total_attempts": len(translator_entries)
                 }
         except Exception as e:
@@ -227,58 +251,60 @@ def status():
         
     # Check embeddings stats from database
     try:
-        with conn.cursor() as cursor:
-            # Check if vector extension is enabled
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT 1 
-                    FROM pg_extension 
-                    WHERE extname = 'vector'
-                )
-            """)
-            vector_enabled = cursor.fetchone()[0]
-            status_data["embedder"]["vector_enabled"] = vector_enabled
-            
-            # Check if docs table exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'docs'
-                )
-            """)
-            docs_table_exists = cursor.fetchone()[0]
-            
-            if docs_table_exists:
-                # Get embedding count
-                cursor.execute("SELECT COUNT(*) FROM docs")
-                embedding_count = cursor.fetchone()[0]
-                status_data["embedder"]["embedding_count"] = embedding_count
+        # Make sure we have a valid connection
+        if 'conn' in locals() and conn:
+            with conn.cursor() as cursor:
+                # Check if vector extension is enabled
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 
+                        FROM pg_extension 
+                        WHERE extname = 'vector'
+                    )
+                """)
+                vector_enabled = cursor.fetchone()[0]
+                status_data["embedder"]["vector_enabled"] = vector_enabled
                 
-                # Get embedding dimensions if any exist
-                if embedding_count > 0:
-                    cursor.execute("SELECT ARRAY_LENGTH(embedding, 1) FROM docs LIMIT 1")
-                    dimensions = cursor.fetchone()[0]
-                    status_data["embedder"]["dimensions"] = dimensions
+                # Check if docs table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'docs'
+                    )
+                """)
+                docs_table_exists = cursor.fetchone()[0]
                 
-                # Check for last embedding run timestamp
-                try:
-                    cursor.execute("""
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.tables 
-                            WHERE table_name = 'system_info'
-                        )
-                    """)
-                    if cursor.fetchone()[0]:
+                if docs_table_exists:
+                    # Get embedding count
+                    cursor.execute("SELECT COUNT(*) FROM docs")
+                    embedding_count = cursor.fetchone()[0]
+                    status_data["embedder"]["embedding_count"] = embedding_count
+                    
+                    # Get embedding dimensions if any exist
+                    if embedding_count > 0:
+                        cursor.execute("SELECT ARRAY_LENGTH(embedding, 1) FROM docs LIMIT 1")
+                        dimensions = cursor.fetchone()[0]
+                        status_data["embedder"]["dimensions"] = dimensions
+                    
+                    # Check for last embedding run timestamp
+                    try:
                         cursor.execute("""
-                            SELECT metadata->>'last_embedding_run' 
-                            FROM system_info 
-                            WHERE id = 'embedder'
+                            SELECT EXISTS (
+                                SELECT FROM information_schema.tables 
+                                WHERE table_name = 'system_info'
+                            )
                         """)
-                        last_run = cursor.fetchone()
-                        if last_run and last_run[0]:
-                            status_data["embedder"]["last_run"] = last_run[0]
-                except Exception:
-                    pass  # Don't fail if we can't get last run info
+                        if cursor.fetchone()[0]:
+                            cursor.execute("""
+                                SELECT metadata->>'last_embedding_run' 
+                                FROM system_info 
+                                WHERE id = 'embedder'
+                            """)
+                            last_run = cursor.fetchone()
+                            if last_run and last_run[0]:
+                                status_data["embedder"]["last_run"] = last_run[0]
+                    except Exception:
+                        pass  # Don't fail if we can't get last run info
     except Exception as e:
         # Just log the error but don't fail
         print(f"Error getting embedder stats: {str(e)}")

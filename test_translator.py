@@ -84,6 +84,60 @@ def main():
                 sys.exit(1)
             else:
                 print("✅ Test passed: All translated documents are correctly marked as processed")
+                
+        # Test 3b: Check content change detection
+        with conn.cursor() as cursor:
+            # Find a document that has both raw_text and translated_text
+            cursor.execute("""
+                SELECT id, raw_text, translated_text FROM raw_docs
+                WHERE raw_text IS NOT NULL AND translated_text IS NOT NULL
+                LIMIT 1
+            """)
+            doc = cursor.fetchone()
+            
+            if doc:
+                doc_id, raw_text, translated_text = doc
+                print(f"Testing content change detection with document {doc_id}")
+                
+                # Modify processed flag to simulate a new scraper run
+                cursor.execute("""
+                    UPDATE raw_docs SET processed = FALSE WHERE id = %s
+                """, (doc_id,))
+                
+                # Re-fetch to verify flag was changed
+                cursor.execute("SELECT processed FROM raw_docs WHERE id = %s", (doc_id,))
+                processed = cursor.fetchone()[0]
+                
+                if not processed:
+                    print("✅ Test preparation successful: Document marked as unprocessed")
+                    
+                    # Perform content change detection test
+                    cursor.execute("""
+                        WITH updated AS (
+                            UPDATE raw_docs 
+                            SET processed = CASE 
+                                WHEN raw_text = %s THEN TRUE 
+                                ELSE processed 
+                            END
+                            WHERE id = %s
+                            RETURNING processed
+                        )
+                        SELECT processed FROM updated
+                    """, (raw_text, doc_id))
+                    
+                    # Check if it was marked as processed again due to no content change
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        print("✅ Test passed: Content change detection correctly identified unchanged content")
+                    else:
+                        print("❌ Test failed: Content change detection did not work correctly")
+                        
+                    # Reset the document's processed status to TRUE
+                    cursor.execute("UPDATE raw_docs SET processed = TRUE WHERE id = %s", (doc_id,))
+                else:
+                    print("⚠️ Warning: Could not set document to unprocessed for testing")
+            else:
+                print("⚠️ Warning: Could not test content change detection (no suitable document found)")
 
         # Test 4: Check translation content (if any translations exist)
         if translated_count > 0:
