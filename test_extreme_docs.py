@@ -159,7 +159,7 @@ async def process_documents(doc_ids: Dict[str, str]):
         return False
     
     # For each document, run the full processing
-    async with embedder.get_aiohttp_session() as session:
+    async with aiohttp.ClientSession() as session:
         for doc_type, doc_id in doc_ids.items():
             if not doc_id:
                 continue
