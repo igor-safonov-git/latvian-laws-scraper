@@ -120,21 +120,12 @@ CREATE TABLE IF NOT EXISTS doc_summaries (
    - Check for new or modified translations
    - When new translations are found:
      - Clear previous embeddings
-     - Generate new embeddings using OpenAI API
-     - Store embeddings in the docs table for vector search
-     - Record timestamp of successful run
-   - Log embedding results to the console and to a logfile
-
-5. The enhanced embedder will:
-   - Run daily at 01:00 UTC (after regular embedder completes)
-   - Check for new or modified translations
-   - When new content is found:
-     - Generate an AI-powered summary of each document
+     - Generate AI-powered summaries of each document
      - Split documents into overlapping chunks with semantic boundary detection
-     - Generate embeddings for the full document, summary, and each chunk
+     - Generate embeddings for the full document, each chunk, and the summary
      - Store all embeddings in their respective tables for multi-representation search
      - Record timestamp of successful run
-   - Log enhanced embedding results to the console and to a logfile
+   - Log embedding results to the console and to a logfile
 
 ## Local Development
 
@@ -155,24 +146,21 @@ echo "OPENAI_API_KEY=your_openai_api_key" >> .env
 # Run each service in a separate terminal
 python scraper.py
 python translator.py
-python embedder.py
 python embedder_enhanced.py
 
 # Test each component
 python test_db.py                 # Test database and scraper
 python test_translator.py         # Test translator functionality
-python test_embedder.py           # Test embedder functionality
-python test_embedder_enhanced.py  # Test enhanced embedder functionality
+python test_embedder_enhanced.py  # Test embedder functionality
 
 # For detailed output with samples
 python test_db.py --verbose
 python test_translator.py --verbose
-python test_embedder.py --verbose
 python test_embedder_enhanced.py --verbose
 
 # Additional test options
 python test_translator.py --check-one  # Test a specific document's translation
-python test_embedder.py --sample       # Show sample embedding values
+python test_embedder_enhanced.py --sample  # Show sample embedding values
 ```
 
 ## Testing
@@ -213,37 +201,24 @@ python test_translator.py --check-one
 To verify that the embedder is working correctly:
 
 ```bash
-python test_embedder.py
-```
-
-This will:
-- Check that the vector extension is enabled
-- Verify that the docs table exists
-- Confirm that embeddings have been generated
-- Check that all translated documents have embeddings
-- Verify the embedding dimensions
-- Validate metadata format
-
-For detailed output with embedding samples:
-
-```bash
-python test_embedder.py --verbose --sample
-```
-
-### Testing the Enhanced Embedder
-To verify that the enhanced embedder functionality is working correctly:
-
-```bash
 python test_embedder_enhanced.py
 ```
 
 This will:
-- Check that all the enhanced embedder tables exist
-- Verify that document chunks have been generated
-- Confirm that document summaries have been generated
+- Check that the vector extension is enabled
+- Verify that all embedding tables exist (docs, doc_chunks, doc_summaries)
+- Confirm that embeddings have been generated
+- Check that document chunks have been generated
+- Verify that document summaries have been generated
 - Check the distribution of chunks per document
 - Validate embedding dimensions across all tables
 - Show summary statistics for all storage components
+
+For detailed output with embedding samples:
+
+```bash
+python test_embedder_enhanced.py --verbose --sample
+```
 
 ## Deployment
 
@@ -252,8 +227,7 @@ This application is deployed on Heroku with:
 - Multiple dyno types:
   - `scraper`: Scheduled web scraping (daily at midnight UTC)
   - `translator`: Background translation service (polls every 60s)
-  - `embedder`: Vector embedding generation (daily at 00:30 UTC)
-  - `enhanced_embedder`: Enhanced embeddings with chunking and summarization (daily at 01:00 UTC)
+  - `embedder`: Vector embeddings with chunking and summarization (daily at 00:30 UTC)
   - `web`: Flask-based status dashboard
 - Environment variables for configuration:
   - `DATABASE_URL`: Set automatically by Heroku PostgreSQL add-on
@@ -282,6 +256,5 @@ To run tests on Heroku:
 ```bash
 heroku run python test_db.py --app latvian-laws
 heroku run python test_translator.py --app latvian-laws
-heroku run python test_embedder.py --app latvian-laws
 heroku run python test_embedder_enhanced.py --app latvian-laws
 ```

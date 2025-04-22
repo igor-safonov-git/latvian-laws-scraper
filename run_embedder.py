@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import asyncio
-from embedder import Embedder
+from embedder_enhanced import EnhancedEmbedder
 
 async def main():
     """Run the embedder job with proper setup."""
-    embedder = Embedder()
+    embedder = EnhancedEmbedder()
     
     # Set up the service first
     if not embedder.setup():

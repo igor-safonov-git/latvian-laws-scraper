@@ -38,10 +38,6 @@ heroku ps:scale translator=0 --app latvian-laws
 heroku ps:scale embedder=1 --app latvian-laws
 heroku ps:scale embedder=0 --app latvian-laws
 
-# Start/stop enhanced embedder
-heroku ps:scale enhanced_embedder=1 --app latvian-laws
-heroku ps:scale enhanced_embedder=0 --app latvian-laws
-
 # Start/stop web interface
 heroku ps:scale web=1 --app latvian-laws
 heroku ps:scale web=0 --app latvian-laws
@@ -52,16 +48,15 @@ heroku ps:scale web=0 --app latvian-laws
 # Run tests on Heroku
 heroku run python test_db.py [-v/--verbose] --app latvian-laws
 heroku run python test_translator.py [-v/--verbose] [--check-one] --app latvian-laws
-heroku run python test_embedder.py [-v/--verbose] [--sample] --app latvian-laws
-heroku run python test_embedder_enhanced.py [-v/--verbose] --app latvian-laws
+heroku run python test_embedder_enhanced.py [-v/--verbose] [--sample] --app latvian-laws
 ```
 
 ## One-Time Operations
 ```bash
 # Run one-time embedder operation
-heroku run python run_embedder.py --app latvian-laws
+heroku run python run_embedder_enhanced.py --app latvian-laws
 
-# Run one-time enhanced embedder operation
+# Run one-time embedder without scheduling
 heroku run python run_enhanced_embedder_once.py --app latvian-laws
 
 # Fix embeddings (orphaned records, token limit issues)
