@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import os
 import sys
+import json
 import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
 
 def fix_embedder_issues():
@@ -149,11 +151,11 @@ def fix_embedder_issues():
                     "placeholder_reason": "Text too large for embedding"
                 }
                 
-                # Insert placeholder
+                # Insert placeholder with proper JSON serialization
                 cursor.execute("""
                     INSERT INTO docs(id, metadata, embedding)
-                    VALUES(%s, %s::jsonb, %s::vector)
-                """, (doc_id, psycopg2.extras.Json(metadata), placeholder))
+                    VALUES(%s, %s, %s::vector)
+                """, (doc_id, json.dumps(metadata), placeholder))
                 print(f"  ✅ Created placeholder embedding for {doc_id}")
         
         # 5. Run final verification
