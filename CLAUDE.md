@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Scraper: `heroku run python test_db.py [-v/--verbose] --app latvian-laws`
   - Translator: `heroku run python test_translator.py [-v/--verbose] [--check-one] --app latvian-laws`
   - Embedder: `heroku run python test_embedder_enhanced.py [-v/--verbose] --app latvian-laws`
+  - Embedder Edge Cases: `heroku run python test_embedder_edge_cases.py [-v/--verbose] --app latvian-laws`
   - Single test focus: Use the `--check-one` flag for translator tests
 - Deploy: `git push heroku main`
 - Dyno management:

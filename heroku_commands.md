@@ -49,6 +49,7 @@ heroku ps:scale web=0 --app latvian-laws
 heroku run python test_db.py [-v/--verbose] --app latvian-laws
 heroku run python test_translator.py [-v/--verbose] [--check-one] --app latvian-laws
 heroku run python test_embedder_enhanced.py [-v/--verbose] [--sample] --app latvian-laws
+heroku run python test_embedder_edge_cases.py [-v/--verbose] --app latvian-laws
 ```
 
 ## One-Time Operations

@@ -220,6 +220,27 @@ For detailed output with embedding samples:
 python test_embedder_enhanced.py --verbose --sample
 ```
 
+### Testing Embedder Edge Cases
+To verify that the embedder handles challenging scenarios correctly:
+
+```bash
+python test_embedder_edge_cases.py
+```
+
+This will test:
+- Extremely long documents (>100K characters)
+- Very small documents (<100 characters)
+- Documents with unusual special characters
+- NULL or placeholder embeddings
+- Orphaned records or reference integrity issues
+- Consistency of embedding dimensions
+
+For detailed analysis:
+
+```bash
+python test_embedder_edge_cases.py --verbose
+```
+
 ## Deployment
 
 This application is deployed on Heroku with:
