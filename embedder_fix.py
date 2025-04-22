@@ -21,7 +21,41 @@ def fix_embedder_issues():
         conn = psycopg2.connect(database_url)
         conn.autocommit = True
         
-        # 1. Identify orphaned embeddings (no matching raw document)
+        # 1. Fix truncation marker issue for very long documents
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT r.id, r.url, LENGTH(r.translated_text) as text_len
+                FROM raw_docs r
+                WHERE LENGTH(r.translated_text) > 32000
+                ORDER BY text_len DESC
+            """)
+            long_docs = cursor.fetchall()
+            
+            if long_docs:
+                print(f"Found {len(long_docs)} very long documents that need truncation:")
+                for doc_id, url, text_len in long_docs:
+                    print(f"  - {doc_id} ({url}): {text_len} chars")
+                    
+                    # Get the current text
+                    cursor.execute("SELECT translated_text FROM raw_docs WHERE id = %s", (doc_id,))
+                    text = cursor.fetchone()[0]
+                    
+                    # Truncate to ~8000 tokens (about 32000 chars)
+                    max_chars = 32000
+                    if len(text) > max_chars:
+                        truncated = text[:max_chars] + "\n...[Truncated due to token limit]"
+                        
+                        # Update with truncated text
+                        cursor.execute("""
+                            UPDATE raw_docs
+                            SET translated_text = %s
+                            WHERE id = %s
+                        """, (truncated, doc_id))
+                        print(f"    ✅ Truncated text from {len(text)} to {len(truncated)} chars")
+            else:
+                print("No very long documents found that need truncation")
+        
+        # 2. Identify orphaned embeddings (no matching raw document)
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT d.id FROM docs d
@@ -48,7 +82,7 @@ def fix_embedder_issues():
             else:
                 print("No orphaned embeddings found")
         
-        # 2. Fix embeddings for documents with no translated text
+        # 3. Fix embeddings for documents with no translated text
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT d.id FROM docs d 
@@ -74,16 +108,17 @@ def fix_embedder_issues():
                 print(f"✅ Removed {cursor.rowcount} invalid embeddings")
                 
                 # Reset processed flag for these documents
-                cursor.execute("""
-                    UPDATE raw_docs
-                    SET processed = FALSE
-                    WHERE id IN %s
-                """, (tuple(invalid_ids),))
-                print(f"✅ Reset processed flag for {cursor.rowcount} documents")
+                if invalid_ids:
+                    cursor.execute("""
+                        UPDATE raw_docs
+                        SET processed = FALSE
+                        WHERE id IN %s
+                    """, (tuple(invalid_ids),))
+                    print(f"✅ Reset processed flag for {cursor.rowcount} documents")
             else:
                 print("No embeddings for documents without translated text found")
         
-        # 3. Run final verification
+        # 4. Run final verification
         with conn.cursor() as cursor:
             # Check for orphaned embeddings
             cursor.execute("""
