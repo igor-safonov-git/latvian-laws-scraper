@@ -7,18 +7,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Scraper: `python scraper.py`
   - Translator: `python translator.py`
   - Embedder: `python embedder.py`
+  - Enhanced Embedder: `python embedder_enhanced.py`
   - Web: `python app.py`
 - Run tests (Heroku only, never locally):
   - All tests: Run each test script separately on Heroku
   - Scraper: `heroku run python test_db.py [-v/--verbose] --app latvian-laws`
   - Translator: `heroku run python test_translator.py [-v/--verbose] [--check-one] --app latvian-laws`
   - Embedder: `heroku run python test_embedder.py [-v/--verbose] [--sample] --app latvian-laws`
+  - Enhanced Embedder: `heroku run python test_embedder_enhanced.py [-v/--verbose] --app latvian-laws`
   - Single test focus: Use the `--check-one` flag for translator tests
 - Deploy: `git push heroku main`
 - Dyno management:
   - Start/stop scraper: `heroku ps:scale scraper=1/0 --app latvian-laws`
   - Start/stop translator: `heroku ps:scale translator=1/0 --app latvian-laws`
   - Start/stop embedder: `heroku ps:scale embedder=1/0 --app latvian-laws`
+  - Start/stop enhanced embedder: `heroku ps:scale enhanced_embedder=1/0 --app latvian-laws`
   - Start/stop web: `heroku ps:scale web=1/0 --app latvian-laws`
 - Logs: `heroku logs --tail --app latvian-laws`
 - Database: `heroku pg:psql --app latvian-laws`
@@ -44,4 +47,5 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Scraper: Fetches and parses Latvian law documents (daily at 00:00 UTC)
   - Translator: Translates documents from Latvian to English (polls every 60s)
   - Embedder: Generates vector embeddings for translated documents (daily at 00:30 UTC)
+  - Enhanced Embedder: Generates document chunks, summaries, and embeddings (daily at 01:00 UTC)
   - Web: Flask-based status dashboard (/ and /status endpoints)

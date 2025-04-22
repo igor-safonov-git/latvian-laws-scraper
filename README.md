@@ -10,6 +10,7 @@ An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 - PostgreSQL storage with content change detection
 - Automatic Latvian to English translation via DeepL API
 - Vector embeddings generation via OpenAI API
+- Enhanced embeddings with document chunking and summarization
 - Vector search capabilities with pgvector
 - Detailed logging
 - Web-based monitoring dashboard
@@ -26,8 +27,11 @@ The application uses environment variables for configuration:
 - `POLL_INTERVAL`: Seconds between translation checks (default: `60`)
 - `BATCH_SIZE`: Number of documents to translate per batch (default: `100`)
 - `MAX_TOKENS`: Maximum tokens for embedding generation (default: `8192`)
-- `EMBEDDING_MODEL`: OpenAI model to use (default: `text-embedding-3-small`)
-- `EMBEDDING_DIMENSIONS`: Vector dimensions (default: `512`)
+- `EMBEDDING_MODEL`: OpenAI model to use (default: `text-embedding-3-large`)
+- `EMBEDDING_DIMENSIONS`: Vector dimensions (default: `3072`)
+- `CHUNK_SIZE`: Characters per document chunk (default: `3000`)
+- `CHUNK_OVERLAP`: Character overlap between chunks (default: `500`)
+- `SUMMARY_LENGTH`: Target character length for summaries (default: `3000`)
 
 ## Database Schema
 
@@ -51,20 +55,51 @@ CREATE TABLE IF NOT EXISTS raw_docs (
 - `processed`: Flag indicating if the document has been processed/translated
 - `translated_text`: English translation of the raw text
 
-### Vector Embeddings Table
+### Vector Embeddings Tables
 
 ```sql
+-- Main document embeddings
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS docs (
   id        TEXT PRIMARY KEY,
   metadata  JSONB,
-  embedding VECTOR(512)
+  embedding VECTOR(3072)
+);
+
+-- Document chunk embeddings
+CREATE TABLE IF NOT EXISTS doc_chunks (
+  id          TEXT NOT NULL,
+  chunk_id    TEXT PRIMARY KEY,
+  chunk_index INTEGER NOT NULL,
+  chunk_text  TEXT NOT NULL,
+  metadata    JSONB,
+  embedding   VECTOR(3072)
+);
+
+-- Document summary embeddings
+CREATE TABLE IF NOT EXISTS doc_summaries (
+  id           TEXT PRIMARY KEY,
+  summary_text TEXT NOT NULL,
+  metadata     JSONB,
+  embedding    VECTOR(3072)
 );
 ```
 
-- `id`: SHA-256 hash of the URL (same as raw_docs.id)
-- `metadata`: JSON with URL, timestamp, and preview of the document
-- `embedding`: Vector representation (512 dimensions) of the translated text
+- `docs.id`: SHA-256 hash of the URL (same as raw_docs.id)
+- `docs.metadata`: JSON with URL, timestamp, and preview of the document
+- `docs.embedding`: Vector representation (3072 dimensions) of the full document
+
+- `doc_chunks.id`: Reference to the document ID
+- `doc_chunks.chunk_id`: Unique chunk identifier (hash of document ID + chunk index)
+- `doc_chunks.chunk_index`: Sequential index of the chunk in the document
+- `doc_chunks.chunk_text`: Text content of this document chunk
+- `doc_chunks.metadata`: JSON with URL, timestamp, chunk index, and text preview
+- `doc_chunks.embedding`: Vector representation of the chunk text
+
+- `doc_summaries.id`: SHA-256 hash of the URL (same as docs.id)
+- `doc_summaries.summary_text`: AI-generated summary of the document
+- `doc_summaries.metadata`: JSON with URL, timestamp, and summary length
+- `doc_summaries.embedding`: Vector representation of the summary text
 
 ## Usage
 
@@ -90,6 +125,17 @@ CREATE TABLE IF NOT EXISTS docs (
      - Record timestamp of successful run
    - Log embedding results to the console and to a logfile
 
+5. The enhanced embedder will:
+   - Run daily at 01:00 UTC (after regular embedder completes)
+   - Check for new or modified translations
+   - When new content is found:
+     - Generate an AI-powered summary of each document
+     - Split documents into overlapping chunks with semantic boundary detection
+     - Generate embeddings for the full document, summary, and each chunk
+     - Store all embeddings in their respective tables for multi-representation search
+     - Record timestamp of successful run
+   - Log enhanced embedding results to the console and to a logfile
+
 ## Local Development
 
 ```bash
@@ -110,16 +156,19 @@ echo "OPENAI_API_KEY=your_openai_api_key" >> .env
 python scraper.py
 python translator.py
 python embedder.py
+python embedder_enhanced.py
 
 # Test each component
-python test_db.py            # Test database and scraper
-python test_translator.py    # Test translator functionality
-python test_embedder.py      # Test embedder functionality
+python test_db.py                 # Test database and scraper
+python test_translator.py         # Test translator functionality
+python test_embedder.py           # Test embedder functionality
+python test_embedder_enhanced.py  # Test enhanced embedder functionality
 
 # For detailed output with samples
 python test_db.py --verbose
 python test_translator.py --verbose
 python test_embedder.py --verbose
+python test_embedder_enhanced.py --verbose
 
 # Additional test options
 python test_translator.py --check-one  # Test a specific document's translation
@@ -181,6 +230,21 @@ For detailed output with embedding samples:
 python test_embedder.py --verbose --sample
 ```
 
+### Testing the Enhanced Embedder
+To verify that the enhanced embedder functionality is working correctly:
+
+```bash
+python test_embedder_enhanced.py
+```
+
+This will:
+- Check that all the enhanced embedder tables exist
+- Verify that document chunks have been generated
+- Confirm that document summaries have been generated
+- Check the distribution of chunks per document
+- Validate embedding dimensions across all tables
+- Show summary statistics for all storage components
+
 ## Deployment
 
 This application is deployed on Heroku with:
@@ -189,6 +253,7 @@ This application is deployed on Heroku with:
   - `scraper`: Scheduled web scraping (daily at midnight UTC)
   - `translator`: Background translation service (polls every 60s)
   - `embedder`: Vector embedding generation (daily at 00:30 UTC)
+  - `enhanced_embedder`: Enhanced embeddings with chunking and summarization (daily at 01:00 UTC)
   - `web`: Flask-based status dashboard
 - Environment variables for configuration:
   - `DATABASE_URL`: Set automatically by Heroku PostgreSQL add-on
@@ -216,4 +281,7 @@ To run tests on Heroku:
 
 ```bash
 heroku run python test_db.py --app latvian-laws
+heroku run python test_translator.py --app latvian-laws
+heroku run python test_embedder.py --app latvian-laws
+heroku run python test_embedder_enhanced.py --app latvian-laws
 ```
