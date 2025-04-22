@@ -37,7 +37,8 @@ class Translator:
         self.database_url = os.getenv("DATABASE_URL")
         self.deepl_api_key = os.getenv("DEEPL_API_KEY")
         self.poll_interval = int(os.getenv("POLL_INTERVAL", "60"))  # Default 60 seconds
-        self.batch_size = int(os.getenv("BATCH_SIZE", "100"))  # Default 100 docs
+        self.batch_size = int(os.getenv("BATCH_SIZE", "10"))  # Default 10 docs (lowered due to possible rate limits)
+        self.max_chunk_size = int(os.getenv("MAX_CHUNK_SIZE", "4000"))  # Default 4000 chars per chunk
         
         # Check required configuration
         if not self.database_url:
@@ -46,7 +47,10 @@ class Translator:
             
         if not self.deepl_api_key:
             logger.error("DEEPL_API_KEY environment variable not set")
-            sys.exit(1)
+            logger.warning("Using placeholder translation mode (for testing)")
+            self.translation_enabled = False
+        else:
+            self.translation_enabled = True
         
         # Initialize database connection
         self.conn = None
@@ -59,6 +63,40 @@ class Translator:
         # DeepL API endpoint
         self.translate_url = "https://api-free.deepl.com/v2/translate"
         
+        # API verification status
+        self.api_verified = False
+        
+    async def verify_api_key(self, session: aiohttp.ClientSession) -> bool:
+        """Verify the DeepL API key by checking usage."""
+        if not self.translation_enabled:
+            logger.warning("API verification skipped - translation not enabled")
+            return False
+            
+        try:
+            headers = {
+                "Authorization": f"DeepL-Auth-Key {self.deepl_api_key}"
+            }
+            
+            usage_url = "https://api-free.deepl.com/v2/usage"
+            
+            async with session.get(usage_url, headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    usage_data = await response.json()
+                    logger.info(f"DeepL API key valid. Character usage: "
+                                f"{usage_data.get('character_count', 0)}/{usage_data.get('character_limit', 0)}")
+                    return True
+                elif response.status == 403:
+                    error_text = await response.text()
+                    logger.error(f"DeepL API key invalid: {error_text}")
+                    return False
+                else:
+                    error_text = await response.text()
+                    logger.error(f"DeepL API verification failed: HTTP {response.status} - {error_text}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error verifying DeepL API key: {str(e)}")
+            return False
+
     def setup(self) -> None:
         """Set up the necessary database connections and update schema."""
         try:
@@ -87,15 +125,28 @@ class Translator:
         except Exception as e:
             logger.error(f"Failed to set up database: {str(e)}")
             sys.exit(1)
+            
+    def get_placeholder_translation(self, text: str) -> str:
+        """Generate a placeholder translation for testing when API key is not available."""
+        # Create a simple placeholder by keeping first paragraph and adding note
+        paragraphs = text.split("\n\n")
+        first_paragraph = paragraphs[0] if paragraphs else text[:200]
+        
+        return (f"[PLACEHOLDER TRANSLATION - NO API KEY]\n\n"
+                f"Original first paragraph (Latvian):\n{first_paragraph}\n\n"
+                f"This is a placeholder translation created for testing purposes. "
+                f"To enable actual translation, please provide a valid DeepL API key. "
+                f"The original document contains {len(text)} characters and approximately "
+                f"{len(paragraphs)} paragraphs.")
 
-    def split_text_into_chunks(self, text: str, max_chunk_size: int = 5000) -> List[str]:
+    def split_text_into_chunks(self, text: str) -> List[str]:
         """
         Split text into chunks that won't exceed DeepL's size limit.
         DeepL has a maximum request size, so we need to split long texts.
         We'll try to split at paragraph boundaries to maintain context.
         """
         # If text is small enough, return it as a single chunk
-        if len(text) <= max_chunk_size:
+        if len(text) <= self.max_chunk_size:
             return [text]
         
         chunks = []
@@ -104,22 +155,22 @@ class Translator:
         
         for paragraph in paragraphs:
             # If adding this paragraph would exceed max size, save current chunk and start a new one
-            if len(current_chunk) + len(paragraph) + 2 > max_chunk_size:
+            if len(current_chunk) + len(paragraph) + 2 > self.max_chunk_size:
                 # If a single paragraph is too large, we need to split it further
-                if not current_chunk and len(paragraph) > max_chunk_size:
+                if not current_chunk and len(paragraph) > self.max_chunk_size:
                     # Split paragraph by sentences (approximated by periods followed by space)
                     sentences = paragraph.replace('. ', '.\n').split('\n')
                     sentence_chunk = ""
                     
                     for sentence in sentences:
-                        if len(sentence_chunk) + len(sentence) + 1 > max_chunk_size:
+                        if len(sentence_chunk) + len(sentence) + 1 > self.max_chunk_size:
                             if sentence_chunk:
                                 chunks.append(sentence_chunk)
                                 sentence_chunk = sentence
                             else:
                                 # Even a single sentence is too long, split by character
-                                for i in range(0, len(sentence), max_chunk_size):
-                                    chunks.append(sentence[i:i+max_chunk_size])
+                                for i in range(0, len(sentence), self.max_chunk_size):
+                                    chunks.append(sentence[i:i+self.max_chunk_size])
                         else:
                             if sentence_chunk:
                                 sentence_chunk += " " + sentence
@@ -149,6 +200,18 @@ class Translator:
 
     async def translate_text(self, session: aiohttp.ClientSession, text: str) -> Optional[str]:
         """Translate text from Latvian to English using DeepL API with chunking for large texts."""
+        # If translation is not enabled, return placeholder
+        if not self.translation_enabled:
+            logger.info("Using placeholder translation (no API key available)")
+            return self.get_placeholder_translation(text)
+            
+        # Verify API key if it hasn't been verified yet
+        if not self.api_verified:
+            self.api_verified = await self.verify_api_key(session)
+            if not self.api_verified:
+                logger.warning("Using placeholder translation due to API key verification failure")
+                return self.get_placeholder_translation(text)
+                
         try:
             # Split text into manageable chunks
             chunks = self.split_text_into_chunks(text)
@@ -178,24 +241,65 @@ class Translator:
                 if i > 0:
                     await asyncio.sleep(1)
                 
-                async with session.post(
-                    self.translate_url, 
-                    headers=headers, 
-                    json=data,
-                    timeout=60  # Shorter timeout for smaller chunks
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Translation failed for chunk {i+1}: HTTP {response.status} - {error_text}")
-                        return None
-                    
-                    result = await response.json()
-                    if "translations" in result and len(result["translations"]) > 0:
-                        translated_chunks.append(result["translations"][0]["text"])
-                    else:
-                        logger.error(f"Invalid translation response for chunk {i+1}: {result}")
-                        return None
+                try:
+                    async with session.post(
+                        self.translate_url, 
+                        headers=headers, 
+                        json=data,
+                        timeout=60  # Shorter timeout for smaller chunks
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            if "translations" in result and len(result["translations"]) > 0:
+                                translated_chunks.append(result["translations"][0]["text"])
+                            else:
+                                logger.error(f"Invalid translation response for chunk {i+1}: {result}")
+                                return None
+                        elif response.status == 403:
+                            # Authentication error
+                            error_text = await response.text()
+                            logger.error(f"Authentication failed for DeepL API: {error_text}")
+                            self.api_verified = False
+                            return self.get_placeholder_translation(text)
+                        elif response.status == 456:
+                            # Character limit reached
+                            logger.error("DeepL API character limit reached")
+                            return self.get_placeholder_translation(text)
+                        elif response.status == 429 or response.status == 529:
+                            # Rate limiting - wait and retry once
+                            logger.warning(f"Rate limit hit, waiting 5 seconds before retry")
+                            await asyncio.sleep(5)
+                            
+                            # Retry the request
+                            async with session.post(
+                                self.translate_url, 
+                                headers=headers, 
+                                json=data,
+                                timeout=60
+                            ) as retry_response:
+                                if retry_response.status == 200:
+                                    retry_result = await retry_response.json()
+                                    if "translations" in retry_result and len(retry_result["translations"]) > 0:
+                                        translated_chunks.append(retry_result["translations"][0]["text"])
+                                    else:
+                                        logger.error(f"Invalid translation response on retry: {retry_result}")
+                                        return None
+                                else:
+                                    error_text = await retry_response.text()
+                                    logger.error(f"Translation failed on retry: HTTP {retry_response.status} - {error_text}")
+                                    return None
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"Translation failed for chunk {i+1}: HTTP {response.status} - {error_text}")
+                            return None
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    logger.error(f"Network error translating chunk {i+1}: {str(e)}")
+                    return None
             
+            if not translated_chunks:
+                logger.error("No chunks were successfully translated")
+                return None
+                
             # Join all translated chunks
             full_translation = "\n\n".join(translated_chunks)
             return full_translation
@@ -388,6 +492,15 @@ class Translator:
         
         logger.info(f"Translator service started, polling every {self.poll_interval} seconds")
         
+        # Check API key status
+        async with aiohttp.ClientSession() as session:
+            self.api_verified = await self.verify_api_key(session)
+            if self.api_verified:
+                logger.info("DeepL API key verified successfully")
+            else:
+                logger.warning("DeepL API key verification failed - using placeholder translations")
+                logger.warning("Update DEEPL_API_KEY in Heroku config to enable real translation")
+        
         # Run job immediately on startup
         await self.run_job()
         
@@ -413,6 +526,13 @@ class Translator:
                     # Log translation stats
                     stats = self.get_translation_stats()
                     logger.info(f"Translation stats: {json.dumps(stats)}")
+                    
+                    # Recheck API key if it was invalid
+                    if not self.api_verified:
+                        async with aiohttp.ClientSession() as session:
+                            self.api_verified = await self.verify_api_key(session)
+                            if self.api_verified:
+                                logger.info("DeepL API key verified successfully")
                     
                     last_test_time = current_time
                     
