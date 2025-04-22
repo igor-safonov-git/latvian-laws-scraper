@@ -358,7 +358,7 @@ class Translator:
         """
         try:
             with self.conn.cursor() as cursor:
-                # Check if we have a previous translation for this document
+                # Get the previously translated document
                 cursor.execute("""
                     SELECT translated_text, raw_text
                     FROM raw_docs
@@ -371,10 +371,19 @@ class Translator:
                     logger.info(f"Document {doc_id} has no previous translation")
                     return True
                 
-                # We have a previous translation, check if content is identical to what we have
+                # We have a previous translation, get the previously translated raw text
                 previous_raw_text = result[1] if len(result) > 1 else None
                 
-                if previous_raw_text == current_text:
+                # Do a more detailed content comparison
+                current_stripped = current_text.strip() if current_text else ""
+                previous_stripped = previous_raw_text.strip() if previous_raw_text else ""
+                
+                # Log the content difference for debugging
+                if previous_stripped != current_stripped:
+                    logger.info(f"Content comparison: previous={previous_stripped[:50]}, current={current_stripped[:50]}")
+                
+                # If content is identical (ignoring trailing/leading whitespace), don't translate again
+                if previous_stripped == current_stripped:
                     # Content is identical to what was previously translated
                     logger.info(f"Document {doc_id} content is unchanged from previous translation")
                     
@@ -400,6 +409,18 @@ class Translator:
         """Update document with translated text and mark as processed."""
         try:
             with self.conn.cursor() as cursor:
+                # First get the current raw_text so we can store it properly
+                cursor.execute("""
+                    SELECT raw_text FROM raw_docs
+                    WHERE id = %s
+                """, (doc_id,))
+                
+                raw_text = cursor.fetchone()
+                if not raw_text:
+                    logger.warning(f"Document {doc_id} not found for update")
+                    return False
+                
+                # Update the document with translation
                 cursor.execute("""
                     UPDATE raw_docs
                     SET translated_text = %s, processed = TRUE
