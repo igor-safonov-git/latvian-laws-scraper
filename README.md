@@ -7,9 +7,8 @@ An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 - Scheduled scraping (daily at midnight UTC)
 - Asynchronous fetching using aiohttp
 - HTML to text conversion with BeautifulSoup
-- PostgreSQL storage with asyncpg
-- Document change tracking
-- JSON logging
+- PostgreSQL storage with content change detection
+- Detailed logging
 
 ## Configuration
 
@@ -43,7 +42,7 @@ CREATE TABLE IF NOT EXISTS raw_docs (
    - Run daily at 00:00 UTC
    - Fetch and parse each URL
    - Store content in PostgreSQL database
-   - Log results to `./logs/scraper.log`
+   - Log results to the console and to a logfile
 
 ## Local Development
 
@@ -56,10 +55,36 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # Create .env file with configuration
-echo "LINKS_FILE=links.txt" > .env
+echo "DATABASE_URL=postgresql://username:password@localhost/database" > .env
+echo "LINKS_FILE=links.txt" >> .env
 
 # Run the scraper
 python scraper.py
+
+# Test the database content
+python test_db.py
+# For detailed output
+python test_db.py --verbose
+```
+
+## Testing
+
+To verify that the scraper is working correctly, run the test script:
+
+```bash
+python test_db.py
+```
+
+This will:
+- Check that the database tables exist
+- Verify that records have been created
+- Ensure that records have actual content
+- Check for URL uniqueness
+
+For more detailed output, use:
+
+```bash
+python test_db.py --verbose
 ```
 
 ## Deployment
@@ -69,3 +94,9 @@ This application is deployed on Heroku with:
 - Worker dyno for scheduled scraping
 - Environment variables for configuration
 - URL: https://latvian-laws-06e89c613b8a.herokuapp.com/
+
+To run tests on Heroku:
+
+```bash
+heroku run python test_db.py --app latvian-laws
+```
