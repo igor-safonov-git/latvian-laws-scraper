@@ -25,11 +25,12 @@ def index():
 
 @app.route('/status')
 def status():
-    """Detailed status information about the scraper and translator."""
+    """Detailed status information about the scraper, translator and embedder."""
     status_data = {
         "database": {"status": "unknown"},
         "scraper": {"status": "unknown"},
         "translator": {"status": "unknown"},
+        "embedder": {"status": "unknown"},
         "latest_run": None
     }
     
@@ -180,6 +181,87 @@ def status():
             status_data["translator"]["log_error"] = str(e)
     else:
         status_data["translator"]["status"] = "no_logs"
+        
+    # Check embedder log file
+    embedder_log_path = Path("./logs/embedder.log")
+    if embedder_log_path.exists():
+        status_data["embedder"]["status"] = "logs_found"
+        try:
+            # Read the last few lines of the log to find latest embedding run
+            with open(embedder_log_path, "r") as f:
+                # Get file size and seek near the end if it's large
+                f.seek(max(0, os.path.getsize(embedder_log_path) - 10000))
+                # Skip partial line
+                if f.tell() > 0:
+                    f.readline()
+                # Read the last lines
+                last_lines = f.readlines()
+            
+            # Parse JSON entries
+            embedder_entries = []
+            for line in last_lines:
+                try:
+                    data = json.loads(line.strip())
+                    if isinstance(data, dict) and "ts" in data:
+                        embedder_entries.append(data)
+                except:
+                    continue  # Skip non-JSON lines
+            
+            if embedder_entries:
+                embedder_entries.sort(key=lambda x: x.get("ts", ""), reverse=True)
+                status_data["embedder"]["latest_run"] = embedder_entries[0]
+                
+                # Count successes and failures
+                success_count = sum(1 for entry in embedder_entries if entry.get("status") == "ok")
+                error_count = sum(1 for entry in embedder_entries if entry.get("status") == "error")
+                
+                status_data["embedder"]["stats"] = {
+                    "successful_embeddings": success_count,
+                    "failed_embeddings": error_count,
+                    "total_attempts": len(embedder_entries)
+                }
+        except Exception as e:
+            status_data["embedder"]["log_error"] = str(e)
+    else:
+        status_data["embedder"]["status"] = "no_logs"
+        
+    # Check embeddings stats from database
+    try:
+        with conn.cursor() as cursor:
+            # Check if vector extension is enabled
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 
+                    FROM pg_extension 
+                    WHERE extname = 'vector'
+                )
+            """)
+            vector_enabled = cursor.fetchone()[0]
+            status_data["embedder"]["vector_enabled"] = vector_enabled
+            
+            # Check if docs table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'docs'
+                )
+            """)
+            docs_table_exists = cursor.fetchone()[0]
+            
+            if docs_table_exists:
+                # Get embedding count
+                cursor.execute("SELECT COUNT(*) FROM docs")
+                embedding_count = cursor.fetchone()[0]
+                status_data["embedder"]["embedding_count"] = embedding_count
+                
+                # Get embedding dimensions if any exist
+                if embedding_count > 0:
+                    cursor.execute("SELECT ARRAY_LENGTH(embedding, 1) FROM docs LIMIT 1")
+                    dimensions = cursor.fetchone()[0]
+                    status_data["embedder"]["dimensions"] = dimensions
+    except Exception as e:
+        # Just log the error but don't fail
+        print(f"Error getting embedder stats: {str(e)}")
     
     return jsonify(status_data)
 
