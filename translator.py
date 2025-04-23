@@ -14,6 +14,7 @@ import aiohttp
 import psycopg2
 import psycopg2.extras
 import pytz
+import deepl
 from dotenv import load_dotenv
 
 # Setup logging
@@ -60,8 +61,7 @@ class Translator:
         self.logs_dir.mkdir(exist_ok=True)
         self.log_file = self.logs_dir / "translator.log"
         
-        # DeepL API endpoint
-        self.translate_url = "https://api-free.deepl.com/v2/translate"
+        # We'll create the DeepL translator object when needed
         
         # API verification status
         self.api_verified = False
@@ -73,26 +73,17 @@ class Translator:
             return False
             
         try:
-            headers = {
-                "Authorization": f"DeepL-Auth-Key {self.deepl_api_key}"
-            }
+            # Use the DeepL Python client to check usage
+            translator = deepl.Translator(self.deepl_api_key)
+            usage = translator.get_usage()
             
-            usage_url = "https://api-free.deepl.com/v2/usage"
-            
-            async with session.get(usage_url, headers=headers, timeout=10) as response:
-                if response.status == 200:
-                    usage_data = await response.json()
-                    logger.info(f"DeepL API key valid. Character usage: "
-                                f"{usage_data.get('character_count', 0)}/{usage_data.get('character_limit', 0)}")
-                    return True
-                elif response.status == 403:
-                    error_text = await response.text()
-                    logger.error(f"DeepL API key invalid: {error_text}")
-                    return False
-                else:
-                    error_text = await response.text()
-                    logger.error(f"DeepL API verification failed: HTTP {response.status} - {error_text}")
-                    return False
+            # Log usage information
+            logger.info(f"DeepL API key valid. Character usage: "
+                        f"{usage.character.count}/{usage.character.limit}")
+            return True
+        except deepl.exceptions.AuthorizationException as e:
+            logger.error(f"DeepL API key invalid: {str(e)}")
+            return False
         except Exception as e:
             logger.error(f"Error verifying DeepL API key: {str(e)}")
             return False
@@ -212,80 +203,46 @@ class Translator:
             if len(chunks) > 1:
                 logger.info(f"Translating document in {len(chunks)} chunks due to size")
             
+            # Create the DeepL translator object
+            translator = deepl.Translator(self.deepl_api_key)
             translated_chunks = []
             
             # Process each chunk
             for i, chunk in enumerate(chunks):
                 logger.info(f"Translating chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
                 
-                headers = {
-                    "Authorization": f"DeepL-Auth-Key {self.deepl_api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                data = {
-                    "text": [chunk],
-                    "source_lang": "LV",  # Latvian
-                    "target_lang": "EN",  # English
-                }
-                
                 # Add small delay between chunks to avoid rate limiting
                 if i > 0:
                     await asyncio.sleep(1)
                 
                 try:
-                    async with session.post(
-                        self.translate_url, 
-                        headers=headers, 
-                        json=data,
-                        timeout=60  # Shorter timeout for smaller chunks
-                    ) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            if "translations" in result and len(result["translations"]) > 0:
-                                translated_chunks.append(result["translations"][0]["text"])
-                            else:
-                                logger.error(f"Invalid translation response for chunk {i+1}: {result}")
-                                return None
-                        elif response.status == 403:
-                            # Authentication error
-                            error_text = await response.text()
-                            logger.error(f"Authentication failed for DeepL API: {error_text}")
-                            self.api_verified = False
-                            return None
-                        elif response.status == 456:
-                            # Character limit reached
-                            logger.error("DeepL API character limit reached")
-                            return None
-                        elif response.status == 429 or response.status == 529:
-                            # Rate limiting - wait and retry once
-                            logger.warning(f"Rate limit hit, waiting 5 seconds before retry")
-                            await asyncio.sleep(5)
-                            
-                            # Retry the request
-                            async with session.post(
-                                self.translate_url, 
-                                headers=headers, 
-                                json=data,
-                                timeout=60
-                            ) as retry_response:
-                                if retry_response.status == 200:
-                                    retry_result = await retry_response.json()
-                                    if "translations" in retry_result and len(retry_result["translations"]) > 0:
-                                        translated_chunks.append(retry_result["translations"][0]["text"])
-                                    else:
-                                        logger.error(f"Invalid translation response on retry: {retry_result}")
-                                        return None
-                                else:
-                                    error_text = await retry_response.text()
-                                    logger.error(f"Translation failed on retry: HTTP {retry_response.status} - {error_text}")
-                                    return None
-                        else:
-                            error_text = await response.text()
-                            logger.error(f"Translation failed for chunk {i+1}: HTTP {response.status} - {error_text}")
-                            return None
-                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    # Use the DeepL Python client for translation
+                    # This is a synchronous call but we're using it in an async context
+                    result = await asyncio.to_thread(
+                        translator.translate_text,
+                        chunk,
+                        source_lang="LV",  # Latvian
+                        target_lang="EN-US"  # American English
+                    )
+                    
+                    # Add the translated text to our chunks
+                    translated_chunks.append(result.text)
+                    
+                except deepl.exceptions.AuthorizationException as e:
+                    logger.error(f"Authentication failed for DeepL API: {str(e)}")
+                    self.api_verified = False
+                    return None
+                except deepl.exceptions.QuotaExceededException:
+                    logger.error("DeepL API character limit reached")
+                    return None
+                except deepl.exceptions.ConnectionException as e:
                     logger.error(f"Network error translating chunk {i+1}: {str(e)}")
+                    return None
+                except deepl.exceptions.DeepLException as e:
+                    logger.error(f"DeepL API error: {str(e)}")
+                    return None
+                except Exception as e:
+                    logger.error(f"Unexpected error translating chunk {i+1}: {str(e)}")
                     return None
             
             if not translated_chunks:

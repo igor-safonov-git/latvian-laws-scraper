@@ -11,3 +11,4 @@ psutil==5.9.5
 tiktoken==0.7.0
 tenacity==8.5.0
 asyncpg==0.29.0
+deepl==1.16.1
