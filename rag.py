@@ -99,8 +99,8 @@ async def generate_embedding(question: str) -> List[float]:
     
     payload = {
         "input": truncated_question,
-        "model": "text-embedding-3-large",
-        "dimensions": 3072  # Must match the dimension count in our database (3072)
+        "model": "text-embedding-3-small", 
+        "dimensions": 1536  # Must match the dimension count in our database (1536)
     }
     
     # Make API request (synchronously, then await to maintain async function signature)
