@@ -57,7 +57,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 CHUNK_TOKEN_SIZE = int(os.getenv("CHUNK_TOKEN_SIZE", "1024"))
 BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "0"))
 EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSIONS = 512  # Specific to text-embedding-3-small
+EMBEDDING_DIMENSIONS = 1536  # Specific to text-embedding-3-small
 
 class DatabaseConnector:
     """Manages database connections and operations."""
