@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 import tiktoken
 import asyncpg
-from openai import AsyncOpenAI
+import requests
 from dotenv import load_dotenv
 from tenacity import (
     retry,
@@ -46,8 +46,8 @@ SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))
 TOP_K = int(os.getenv("TOP_K", "5"))
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "8000"))
 
-# Initialize OpenAI client with minimal configuration
-client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=None)
+# OpenAI API endpoint
+OPENAI_EMBEDDING_ENDPOINT = "https://api.openai.com/v1/embeddings"
 
 # Initialize tokenizer for text truncation
 encoder = tiktoken.get_encoding("cl100k_base")
@@ -74,18 +74,45 @@ async def generate_embedding(question: str) -> List[float]:
     """
     Generate an embedding for the question using OpenAI API.
     Retries 3 times with exponential backoff on failure.
+    
+    Uses direct API call with requests to avoid client library issues.
     """
     # Truncate to token limit
     truncated_question = truncate_to_token_limit(question, MAX_CONTEXT_TOKENS)
     
-    # Generate embedding using v1 API format
-    response = await client.embeddings.create(
-        input=truncated_question,
-        model="text-embedding-3-small"
+    # Prepare API request
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
+    }
+    
+    payload = {
+        "input": truncated_question,
+        "model": "text-embedding-3-small",
+        "dimensions": 1536  # Using typical dimension count
+    }
+    
+    # Make API request (synchronously, then await to maintain async function signature)
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: requests.post(
+            OPENAI_EMBEDDING_ENDPOINT,
+            headers=headers,
+            json=payload
+        )
     )
     
+    # Check response
+    if response.status_code != 200:
+        raise Exception(f"API Error: {response.status_code}, {response.text}")
+    
+    # Parse response
+    result = response.json()
+    
     # Extract embedding
-    embedding = response.data[0].embedding
+    embedding = result["data"][0]["embedding"]
+    
     return embedding
 
 
