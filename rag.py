@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 import tiktoken
 import asyncpg
-import openai
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from tenacity import (
     retry,
@@ -47,7 +47,7 @@ TOP_K = int(os.getenv("TOP_K", "5"))
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "8000"))
 
 # Initialize OpenAI client
-openai.api_key = OPENAI_API_KEY
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # Initialize tokenizer for text truncation
 encoder = tiktoken.get_encoding("cl100k_base")
@@ -78,14 +78,14 @@ async def generate_embedding(question: str) -> List[float]:
     # Truncate to token limit
     truncated_question = truncate_to_token_limit(question, MAX_CONTEXT_TOKENS)
     
-    # Generate embedding
-    response = await openai.Embedding.acreate(
+    # Generate embedding using v1 API format
+    response = await client.embeddings.create(
         input=truncated_question,
         model="text-embedding-3-small"
     )
     
     # Extract embedding
-    embedding = response["data"][0]["embedding"]
+    embedding = response.data[0].embedding
     return embedding
 
 
