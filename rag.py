@@ -182,13 +182,22 @@ async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[st
         for i, row in enumerate(rows):
             # Log the full metadata for debugging
             try:
-                logger.info(f"Document {i} full metadata: {json.dumps(row['metadata'])}")
+                logger.info(f"Document {i} full metadata: {row['metadata']}")
                 logger.info(f"Document {i} metadata type: {type(row['metadata']).__name__}")
+                
+                # Parse metadata if it's a string (JSON)
+                if isinstance(row['metadata'], str):
+                    try:
+                        metadata = json.loads(row['metadata'])
+                        logger.info(f"Successfully parsed metadata JSON to dict")
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse metadata JSON: {row['metadata']}")
+                        metadata = {}
+                else:
+                    metadata = row["metadata"] if row["metadata"] else {}
             except Exception as e:
-                logger.info(f"Document {i} metadata (not JSON serializable): {row['metadata']}")
-                logger.info(f"Document {i} metadata error: {str(e)}")
-            
-            metadata = row["metadata"] if row["metadata"] else {}
+                logger.error(f"Document {i} metadata error: {str(e)}")
+                metadata = {}
             
             # Check if text_preview exists and log it with more details
             text_preview = metadata.get("text_preview")
