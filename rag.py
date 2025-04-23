@@ -26,7 +26,7 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Set to DEBUG for maximum detail
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("rag")
@@ -36,8 +36,19 @@ os.makedirs("./logs", exist_ok=True)
 
 # Add file handler for RAG logs
 file_handler = logging.FileHandler("./logs/rag.log")
-file_handler.setLevel(logging.INFO)
+file_handler.setLevel(logging.DEBUG)  # Set to DEBUG for maximum detail
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
+# Add console handler to ensure logs go to the console too
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)  # Set to DEBUG for maximum detail
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Direct output to log file
+logger.propagate = False  # Prevent duplication of log messages
 
 # Get configuration from environment
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -88,8 +99,8 @@ async def generate_embedding(question: str) -> List[float]:
     
     payload = {
         "input": truncated_question,
-        "model": "text-embedding-3-small",
-        "dimensions": 1536  # Using typical dimension count
+        "model": "text-embedding-3-large",
+        "dimensions": 3072  # Must match the dimension count in our database (3072)
     }
     
     # Make API request (synchronously, then await to maintain async function signature)
@@ -124,7 +135,8 @@ async def generate_embedding(question: str) -> List[float]:
 )
 async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[str, Any]]:
     """
-    Query for similar documents from PostgreSQL database using vector similarity.
+    Query for similar document chunks from PostgreSQL+pgvector using vector similarity.
+    Retrieves chunk-level context for RAG.
     Retries 3 times with exponential backoff on failure.
     """
     # Connect to database
@@ -134,27 +146,62 @@ async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[st
         # Convert embedding to correct format for pgvector
         embedding_str = str(embedding).replace("'", "").replace(", ", ",")
         
-        # Query for similar documents
-        rows = await conn.fetch("""
+        # Query for similar documents from the docs table
+        # This is where the embeddings currently exist
+        rows = await conn.fetch(
+            """
             SELECT
-                metadata->>'translated_text' AS text,
-                metadata->>'url' AS url,
-                metadata->>'fetched_at' AS fetched_at,
+                id,
+                metadata,
                 embedding <-> $1::vector AS score
             FROM docs
+            WHERE embedding IS NOT NULL
             ORDER BY score
             LIMIT $2
-        """, embedding_str, limit)
+            """,
+            embedding_str,
+            limit
+        )
+        
+        # Log raw results for debugging
+        try:
+            # Convert rows to a more loggable format
+            log_rows = []
+            for row in rows:
+                log_rows.append({
+                    "id": row["id"],
+                    "score": float(row["score"]),
+                    "metadata_keys": list(row["metadata"].keys()) if row["metadata"] else []
+                })
+            logger.info(f"Raw query results: {json.dumps(log_rows)}")
+        except Exception as e:
+            logger.error(f"Error logging query results: {str(e)}")
         
         # Convert rows to dictionaries
         results = []
-        for row in rows:
-            results.append({
-                "text": row["text"],
-                "url": row["url"],
-                "fetched_at": row["fetched_at"],
-                "score": row["score"]
-            })
+        for i, row in enumerate(rows):
+            # Log the full metadata for debugging
+            try:
+                logger.info(f"Document {i} full metadata: {json.dumps(row['metadata'])}")
+            except:
+                logger.info(f"Document {i} metadata (not JSON serializable): {row['metadata']}")
+            
+            metadata = row["metadata"] if row["metadata"] else {}
+            
+            # Check if text_preview exists and log it
+            text_preview = metadata.get("text_preview")
+            logger.info(f"Document {i} text_preview: {text_preview}")
+            
+            # Create result with debug info
+            result = {
+                "text": text_preview if text_preview else "No preview available",
+                "url": metadata.get("url", "Unknown URL"),
+                "fetched_at": metadata.get("fetched_at", "Unknown date"),
+                "score": row["score"],
+                "metadata_keys": list(metadata.keys()) if metadata else []
+            }
+            results.append(result)
+            logger.info(f"Document {i} result: {json.dumps(result)}")
         
         return results
     
@@ -169,34 +216,73 @@ async def retrieve(question: str) -> List[Dict[str, Any]]:
     Returns up to TOP_K context snippets sorted by relevance.
     
     Each item is formatted as:
-    { source: "db", text: str, url: str, fetched_at: str }
+    { source: "db", text: str, url: str, fetched_at: str, metadata_keys: list }
     """
+    # Force the log level to DEBUG for this run
+    logging.getLogger('rag').setLevel(logging.DEBUG)
+    logger.info("==================== RETRIEVAL STARTED ====================")
+    logger.info(f"Starting retrieval for query: '{question}'")
+    logger.info(f"Using similarity threshold: {SIMILARITY_THRESHOLD}")
     try:
         # Generate embedding for the question
         embedding = await generate_embedding(question)
         
+        # Log embedding dimensions for debugging
+        logger.info(f"Generated embedding with {len(embedding)} dimensions")
+        
         # Query similar documents
         similar_docs = await query_similar_docs(embedding, TOP_K)
         
-        # Filter results based on similarity threshold
-        db_hits = [
-            {
-                "source": "db",
-                "text": doc["text"],
-                "url": doc["url"],
-                "fetched_at": doc["fetched_at"]
-            }
-            for doc in similar_docs
-            if doc["score"] <= SIMILARITY_THRESHOLD
-        ]
+        # Log raw results before filtering
+        logger.info(f"Raw similarity scores: {[(i, f'{doc[\"score\"]:.4f}') for i, doc in enumerate(similar_docs)]}")
         
-        # Log retrieval stats
+        # Filter results based on similarity threshold
+        db_hits = []
+        logger.info(f"Similarity threshold is set to: {SIMILARITY_THRESHOLD}")
+        
+        # Extract raw results first for better logging
+        logger.info(f"Processing {len(similar_docs)} candidate documents")
+        
+        for i, doc in enumerate(similar_docs):
+            try:
+                logger.info(f"Document {i}: {doc.keys()}")
+                score = float(doc["score"]) if "score" in doc else 999.0
+                logger.info(f"Document {i} score: {score:.4f}")
+                
+                if score <= SIMILARITY_THRESHOLD:
+                    # Add this document to results
+                    db_hits.append({
+                        "source": "db",
+                        "text": doc.get("text", "No text available"),
+                        "url": doc.get("url", "Unknown URL"),
+                        "fetched_at": doc.get("fetched_at", "Unknown date"),
+                        "score": score
+                    })
+                    logger.info(f"Added document {i} with score {score:.4f} below threshold {SIMILARITY_THRESHOLD}")
+                else:
+                    logger.info(f"Skipped document {i} with score {score:.4f} above threshold {SIMILARITY_THRESHOLD}")
+            except Exception as e:
+                logger.error(f"Error processing document {i}: {str(e)}")
+                logger.error(f"Document content: {str(doc)}")
+        
+        # Log retrieval stats with more detail
         log_entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "question": question,
-            "db_hits_count": len(db_hits)
+            "db_hits_count": len(db_hits),
+            "all_results_count": len(similar_docs),
+            "threshold": SIMILARITY_THRESHOLD,
+            "scores": [f"{doc['score']:.4f}" for doc in similar_docs[:3]] if similar_docs else []
         }
         logger.info(json.dumps(log_entry))
+        
+        # Add a final log message for easy identification in logs
+        logger.info(f"==================== RETRIEVAL COMPLETE ====================")
+        logger.info(f"Final results count: {len(db_hits)}")
+        
+        # Print the final db_hits for debugging
+        for i, hit in enumerate(db_hits):
+            logger.info(f"Result {i}: {hit}")
         
         return db_hits
     

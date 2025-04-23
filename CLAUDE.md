@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run services (Heroku only):
   - Scraper: `python scraper.py`
   - Translator: `python translator.py`
-  - Embedder: `python embedder_stream.py`
+  - Embedder: `python embedder_optimized.py [--once] [--memory-limit N] [--concurrency N]` (memory-optimized)
+  - RAG: `python rag.py` (test retrieval functionality)
   - Web: `python app.py`
 - Run tests (Heroku only, never locally):
   - All tests: Run each test script separately on Heroku
@@ -36,6 +37,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Docstrings: Required for all functions and classes (Google-style)
 - Security: No hardcoded credentials, all secrets in env variables
 - Content change detection: Compare stripped content to avoid whitespace false positives
+- Memory management: Use streaming/batch processing for large documents
+- Retry logic: Use tenacity with exponential backoff for external API calls
 
 ## Infrastructure
 - Heroku app: latvian-laws (EU region)
@@ -47,3 +50,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Translator: Translates documents from Latvian to English (polls every 60s)
   - Embedder: Generates document chunks, summaries, and embeddings (daily at 00:30 UTC)
   - Web: Flask-based status dashboard (/ and /status endpoints)
+- External APIs:
+  - DeepL: For Latvian to English translation
+  - OpenAI: For text embeddings (text-embedding-3-large/small models)
