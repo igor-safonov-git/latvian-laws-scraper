@@ -37,6 +37,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("embedder")
 
+# Suppress debug logs from HTTP libraries
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 # Ensure logs directory exists
 if not os.path.exists("./logs"):
     os.makedirs("./logs")
