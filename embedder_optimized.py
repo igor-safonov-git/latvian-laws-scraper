@@ -268,8 +268,9 @@ class AsyncDatabaseConnector:
             # Convert metadata to JSON string
             metadata_json = json.dumps(metadata)
             
-            # Prepare embedding for vector type
-            embedding_data = embedding
+            # Prepare embedding as a string for pgvector
+            # The vector type in PostgreSQL expects a string like '[0.1, 0.2, 0.3]'
+            embedding_str = str(embedding).replace("'", "").replace(", ", ",")
             
             # Perform upsert
             await self.conn.execute("""
@@ -277,7 +278,7 @@ class AsyncDatabaseConnector:
                 VALUES ($1, $2, $3::vector)
                 ON CONFLICT (id) DO UPDATE 
                 SET metadata = $2, embedding = $3::vector
-            """, chunk_id, metadata_json, embedding_data)
+            """, chunk_id, metadata_json, embedding_str)
             
             return True
         except Exception as e:
