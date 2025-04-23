@@ -56,6 +56,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))
 TOP_K = int(os.getenv("TOP_K", "5"))
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "8000"))
+EMBEDDING_DIMENSIONS = 3072  # Updated to match text-embedding-3-large
 
 # OpenAI API endpoint
 OPENAI_EMBEDDING_ENDPOINT = "https://api.openai.com/v1/embeddings"
@@ -99,8 +100,8 @@ async def generate_embedding(question: str) -> List[float]:
     
     payload = {
         "input": truncated_question,
-        "model": "text-embedding-3-small", 
-        "dimensions": 1536  # Must match the dimension count in our database (1536)
+        "model": "text-embedding-3-large", 
+        "dimensions": EMBEDDING_DIMENSIONS  # Must match the dimension count in our database (3072)
     }
     
     # Make API request (synchronously, then await to maintain async function signature)

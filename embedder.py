@@ -58,8 +58,8 @@ CHUNK_TOKEN_SIZE = int(os.getenv("CHUNK_TOKEN_SIZE", "1024"))
 BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "1"))
 MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("MAX_CONCURRENT_EMBEDDINGS", "1"))
 MEMORY_LIMIT_MB = int(os.getenv("MEMORY_LIMIT_MB", "400"))
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSIONS = 1536  # Will be updated dynamically if needed
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_DIMENSIONS = 3072
 
 # Encoder for tokenization
 encoder = tiktoken.get_encoding("cl100k_base")
@@ -112,65 +112,25 @@ class AsyncDatabaseConnector:
             # Enable vector extension
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             
-            # Check if docs table exists
-            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'docs');")
-            table_exists = cursor.fetchone()[0]
+            # Force recreate all tables with correct dimensions - this is important to avoid dimension mismatch
+            logger.info(f"Setting up database schema with {EMBEDDING_DIMENSIONS} dimensions")
             
-            if table_exists:
-                # Check column dimensions
-                try:
-                    cursor.execute(f"""
-                        SELECT atttypmod FROM pg_attribute 
-                        WHERE attrelid = 'docs'::regclass AND attname = 'embedding';
-                    """)
-                    current_dimensions = cursor.fetchone()[0]
-                    
-                    if current_dimensions != EMBEDDING_DIMENSIONS:
-                        logger.warning(f"Vector dimension mismatch: table has {current_dimensions} dimensions, but {EMBEDDING_DIMENSIONS} expected")
-                        logger.info("Recreating docs table with correct dimensions...")
-                        
-                        # Backup metadata
-                        cursor.execute("CREATE TEMP TABLE docs_backup AS SELECT id, metadata FROM docs;")
-                        
-                        # Drop existing table
-                        cursor.execute("DROP TABLE IF EXISTS docs;")
-                        
-                        # Recreate with correct dimensions
-                        cursor.execute(f"""
-                            CREATE TABLE docs (
-                                id TEXT PRIMARY KEY,
-                                metadata JSONB,
-                                embedding VECTOR({EMBEDDING_DIMENSIONS})
-                            );
-                        """)
-                        
-                        # Restore metadata
-                        cursor.execute("""
-                            INSERT INTO docs (id, metadata)
-                            SELECT id, metadata FROM docs_backup;
-                        """)
-                except Exception as e:
-                    logger.warning(f"Could not check vector dimensions: {e}")
-                    # If we can't check dimensions, recreate table to be safe
-                    cursor.execute("DROP TABLE IF EXISTS docs;")
-                    cursor.execute(f"""
-                        CREATE TABLE docs (
-                            id TEXT PRIMARY KEY,
-                            metadata JSONB,
-                            embedding VECTOR({EMBEDDING_DIMENSIONS})
-                        );
-                    """)
-            else:
-                # Create documents table if it doesn't exist
-                cursor.execute(f"""
-                    CREATE TABLE IF NOT EXISTS docs (
-                        id TEXT PRIMARY KEY,
-                        metadata JSONB,
-                        embedding VECTOR({EMBEDDING_DIMENSIONS})
-                    );
-                """)
+            # Drop existing tables to ensure dimension consistency
+            cursor.execute("DROP TABLE IF EXISTS doc_chunks;")
+            cursor.execute("DROP TABLE IF EXISTS doc_summaries;")
+            cursor.execute("DROP TABLE IF EXISTS docs;")
             
-            # Create other necessary tables
+            # Create tables with correct dimensions
+            logger.info("Creating docs table...")
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS docs (
+                    id TEXT PRIMARY KEY,
+                    metadata JSONB,
+                    embedding VECTOR({EMBEDDING_DIMENSIONS})
+                );
+            """)
+            
+            logger.info("Creating doc_chunks table...")
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS doc_chunks (
                     id TEXT NOT NULL,
@@ -182,6 +142,7 @@ class AsyncDatabaseConnector:
                 );
             """)
             
+            logger.info("Creating doc_summaries table...")
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS doc_summaries (
                     id TEXT PRIMARY KEY,
@@ -203,6 +164,7 @@ class AsyncDatabaseConnector:
             
             cursor.close()
             conn.close()
+            logger.info(f"Database schema setup complete with {EMBEDDING_DIMENSIONS} dimensions")
             return True
             
         except Exception as e:
