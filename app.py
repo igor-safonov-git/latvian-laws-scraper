@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 import os
 import psycopg2
 from dotenv import load_dotenv
@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
 
 # Load environment variables
 load_dotenv()
@@ -20,8 +20,19 @@ def index():
         "status": "online",
         "name": "Latvian Laws Scraper",
         "description": "Asynchronous scraper for Latvian legal documents",
-        "time": datetime.now(timezone.utc).isoformat()
+        "time": datetime.now(timezone.utc).isoformat(),
+        "export_url": "/export" if os.path.exists(os.path.join(app.static_folder, "export/index.html")) else None
     })
+
+@app.route('/export')
+def export_index():
+    """Serve the index.html file from the export directory."""
+    return send_from_directory(os.path.join(app.static_folder, 'export'), 'index.html')
+
+@app.route('/export/<path:filename>')
+def export_file(filename):
+    """Serve a specific file from the export directory."""
+    return send_from_directory(os.path.join(app.static_folder, 'export'), filename)
 
 @app.route('/status')
 def status():
