@@ -235,11 +235,20 @@ class AsyncDatabaseConnector:
         try:
             # Use asyncpg cursor for streaming results
             async with self.conn.transaction():
+                # First, count available documents for logging
+                count = await self.conn.fetchval("""
+                    SELECT COUNT(*) 
+                    FROM raw_docs
+                    WHERE translated_text IS NOT NULL
+                """)
+                
+                logger.info(f"Found {count} documents with translations")
+                
+                # Stream the documents that need processing
                 async for record in self.conn.cursor("""
                     SELECT id AS trans_id, url, fetched_at, translated_text
                     FROM raw_docs
                     WHERE translated_text IS NOT NULL
-                      AND (processed = FALSE OR processed IS NULL)
                 """):
                     # Convert record to dict and yield
                     doc = {
@@ -248,6 +257,10 @@ class AsyncDatabaseConnector:
                         "fetched_at": record["fetched_at"],
                         "translated_text": record["translated_text"]
                     }
+                    
+                    # Add debug logging for document
+                    logger.info(f"Processing document {doc['trans_id']} from {doc['url']}, " +
+                                f"text length: {len(doc['translated_text'])} chars")
                     
                     # Check memory before yielding
                     if await MemoryGuard.check_memory():
