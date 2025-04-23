@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import tiktoken
 import openai
+import httpx
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -49,7 +50,17 @@ file_handler.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 
 # Initialize OpenAI client
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Ensure compatibility with older versions
+try:
+    openai_client = AsyncOpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        # Skip proxies to ensure compatibility with Heroku environment
+        http_client=httpx.AsyncClient(proxies=None)
+    )
+except TypeError:
+    # Fallback for older versions or if proxies param causes issues
+    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 encoder = tiktoken.get_encoding("cl100k_base")  # Used by text-embedding models
 
 # Configuration from environment
@@ -438,13 +449,32 @@ async def run_once() -> None:
 if __name__ == "__main__":
     # Parse command-line arguments
     import argparse
+    import sys
+    
     parser = argparse.ArgumentParser(description="Embedder service for vector embeddings")
     parser.add_argument("--once", action="store_true", help="Run once and exit (no scheduling)")
-    args = parser.parse_args()
+    
+    # Handle both direct arguments and passing after -- in Heroku
+    if "--once" in sys.argv:
+        args = parser.parse_args()
+    else:
+        # Try to parse as if passed after -- in Heroku
+        try:
+            args = parser.parse_args()
+        except:
+            # Default to running as a service
+            args = argparse.Namespace(once=False)
+            # Check if passed after -- in Heroku command
+            for i, arg in enumerate(sys.argv):
+                if arg == "--" and i+1 < len(sys.argv) and sys.argv[i+1] == "--once":
+                    args.once = True
+                    break
     
     # Run either once or as a scheduled service
     if args.once:
+        logger.info("Running embedder service once")
         asyncio.run(run_once())
     else:
         # Run as a service
+        logger.info("Starting scheduled embedder service")
         asyncio.run(EmbedderService().run())
