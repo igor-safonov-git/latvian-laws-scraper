@@ -108,15 +108,11 @@ CREATE TABLE IF NOT EXISTS doc_summaries (
    - Run daily at 00:00 UTC
    - Fetch and parse each URL
    - Store raw content in PostgreSQL database
-   - Log results to the console and to a logfile
-3. The translator will:
-   - Run every 60 seconds (configurable)
-   - Find untranslated documents (where processed = FALSE)
    - Translate text from Latvian to English using DeepL API
    - Store translated text and mark document as processed
-   - Log translation results to the console and to a logfile
-4. The embedder will:
-   - Run daily at 00:30 UTC (after translator completes)
+   - Log results to the console and to a logfile
+3. The embedder will:
+   - Run daily at 00:30 UTC (after translation completes)
    - Check for new or modified translations
    - When new translations are found:
      - Clear previous embeddings
@@ -145,7 +141,6 @@ echo "OPENAI_API_KEY=your_openai_api_key" >> .env
 
 # Run each service in a separate terminal
 python scraper.py
-python translator.py
 python embedder_enhanced.py
 
 # Test each component

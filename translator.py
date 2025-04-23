@@ -613,11 +613,9 @@ class Translator:
             return stats
 
     async def start(self) -> None:
-        """Start the translator service with a polling interval."""
+        """Run the translator job once."""
         self.setup()
-        
-        logger.info(f"Translator service started, polling every {self.poll_interval} seconds")
-        
+
         # Check API key status
         async with aiohttp.ClientSession() as session:
             self.api_verified = await self.verify_api_key(session)
@@ -626,44 +624,12 @@ class Translator:
             else:
                 logger.warning("DeepL API key verification failed - using placeholder translations")
                 logger.warning("Update DEEPL_API_KEY in Heroku config to enable real translation")
-        
-        # Run job immediately on startup
+
+        # Run translation job
         await self.run_job()
-        
-        # Run initial tests
+
+        # Run tests to verify translator functionality
         self.run_tests()
-        
-        # Keep the script running with polling interval
-        try:
-            # Track time since last test
-            last_test_time = time.time()
-            test_interval = 3600  # Run tests hourly
-            
-            while True:
-                await asyncio.sleep(self.poll_interval)
-                await self.run_job()
-                
-                # Run tests periodically
-                current_time = time.time()
-                if current_time - last_test_time > test_interval:
-                    logger.info("Running periodic translator tests...")
-                    self.run_tests()
-                    
-                    # Log translation stats
-                    stats = self.get_translation_stats()
-                    logger.info(f"Translation stats: {json.dumps(stats)}")
-                    
-                    # Recheck API key if it was invalid
-                    if not self.api_verified:
-                        async with aiohttp.ClientSession() as session:
-                            self.api_verified = await self.verify_api_key(session)
-                            if self.api_verified:
-                                logger.info("DeepL API key verified successfully")
-                    
-                    last_test_time = current_time
-                    
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Shutting down translator service")
 
 
 async def main() -> None:

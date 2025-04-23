@@ -303,6 +303,23 @@ class Scraper:
         # Run tests to verify everything worked correctly
         self.run_tests()
 
+        # Trigger translator job after scraping completion
+        logger.info("Triggering translator job after scraping completion")
+        try:
+            result = subprocess.run(
+                ["python", "translator.py"],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                logger.info("Translator completed successfully")
+                logger.info(result.stdout)
+            else:
+                logger.error(f"Translator failed with code {result.returncode}")
+                logger.error(result.stderr)
+        except Exception as e:
+            logger.error(f"Error running translator: {e}")
+
     async def start(self) -> None:
         """Start the scraper with a scheduled job."""
         self.setup()
