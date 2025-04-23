@@ -47,7 +47,7 @@ class Translator:
             
         if not self.deepl_api_key:
             logger.error("DEEPL_API_KEY environment variable not set")
-            logger.warning("Using placeholder translation mode (for testing)")
+            logger.error("Translation cannot proceed without a valid DeepL API key")
             self.translation_enabled = False
         else:
             self.translation_enabled = True
@@ -126,18 +126,10 @@ class Translator:
             logger.error(f"Failed to set up database: {str(e)}")
             sys.exit(1)
             
-    def get_placeholder_translation(self, text: str) -> str:
-        """Generate a placeholder translation for testing when API key is not available."""
-        # Create a simple placeholder by keeping first paragraph and adding note
-        paragraphs = text.split("\n\n")
-        first_paragraph = paragraphs[0] if paragraphs else text[:200]
-        
-        return (f"[PLACEHOLDER TRANSLATION - NO API KEY]\n\n"
-                f"Original first paragraph (Latvian):\n{first_paragraph}\n\n"
-                f"This is a placeholder translation created for testing purposes. "
-                f"To enable actual translation, please provide a valid DeepL API key. "
-                f"The original document contains {len(text)} characters and approximately "
-                f"{len(paragraphs)} paragraphs.")
+    def get_placeholder_translation(self, text: str) -> None:
+        """Return None when no API key is available."""
+        logger.error("No valid DeepL API key available - translation not possible")
+        return None
 
     def split_text_into_chunks(self, text: str) -> List[str]:
         """
@@ -200,17 +192,17 @@ class Translator:
 
     async def translate_text(self, session: aiohttp.ClientSession, text: str) -> Optional[str]:
         """Translate text from Latvian to English using DeepL API with chunking for large texts."""
-        # If translation is not enabled, return placeholder
+        # If translation is not enabled, return None
         if not self.translation_enabled:
-            logger.info("Using placeholder translation (no API key available)")
-            return self.get_placeholder_translation(text)
+            logger.error("Translation not enabled - no valid API key available")
+            return None
             
         # Verify API key if it hasn't been verified yet
         if not self.api_verified:
             self.api_verified = await self.verify_api_key(session)
             if not self.api_verified:
-                logger.warning("Using placeholder translation due to API key verification failure")
-                return self.get_placeholder_translation(text)
+                logger.error("DeepL API key verification failed - translation not possible")
+                return None
                 
         try:
             # Split text into manageable chunks
@@ -260,11 +252,11 @@ class Translator:
                             error_text = await response.text()
                             logger.error(f"Authentication failed for DeepL API: {error_text}")
                             self.api_verified = False
-                            return self.get_placeholder_translation(text)
+                            return None
                         elif response.status == 456:
                             # Character limit reached
                             logger.error("DeepL API character limit reached")
-                            return self.get_placeholder_translation(text)
+                            return None
                         elif response.status == 429 or response.status == 529:
                             # Rate limiting - wait and retry once
                             logger.warning(f"Rate limit hit, waiting 5 seconds before retry")
@@ -622,8 +614,8 @@ class Translator:
             if self.api_verified:
                 logger.info("DeepL API key verified successfully")
             else:
-                logger.warning("DeepL API key verification failed - using placeholder translations")
-                logger.warning("Update DEEPL_API_KEY in Heroku config to enable real translation")
+                logger.error("DeepL API key verification failed - translation cannot proceed")
+                logger.error("Update DEEPL_API_KEY in Heroku config with a valid API key")
 
         # Run translation job
         await self.run_job()
