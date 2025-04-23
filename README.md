@@ -1,6 +1,6 @@
-# Latvian Laws Scraper
+# Latvian Legal Documents RAG System
 
-An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
+An end-to-end system for scraping, translating, and searching Latvian legal documents with a Telegram chatbot interface.
 
 ## Features
 
@@ -12,8 +12,10 @@ An asynchronous scraper for Latvian legal documents with PostgreSQL storage.
 - Vector embeddings generation via OpenAI API
 - Enhanced embeddings with document chunking and summarization
 - Vector search capabilities with pgvector
-- Detailed logging
+- Retrieval Augmented Generation (RAG) for context-aware answers
+- Telegram bot interface for user interaction
 - Web-based monitoring dashboard
+- Detailed logging
 - Automatic testing and statistics tracking
 
 ## Configuration
@@ -23,12 +25,17 @@ The application uses environment variables for configuration:
 - `DATABASE_URL`: PostgreSQL connection string (set automatically on Heroku)
 - `LINKS_FILE`: Path to a file containing URLs to scrape (default: `links.txt`)
 - `DEEPL_API_KEY`: API key for DeepL translation service
-- `OPENAI_API_KEY`: API key for OpenAI embedding service
+- `OPENAI_API_KEY`: API key for OpenAI embedding and LLM services
+- `TELEGRAM_API_KEY`: API key for Telegram bot
 - `POLL_INTERVAL`: Seconds between translation checks (default: `60`)
-- `BATCH_SIZE`: Number of documents to translate per batch (default: `100`)
+- `BATCH_SIZE`: Number of documents to translate per batch (default: `10`)
 - `MAX_TOKENS`: Maximum tokens for embedding generation (default: `8192`)
-- `EMBEDDING_MODEL`: OpenAI model to use (default: `text-embedding-3-large`)
-- `EMBEDDING_DIMENSIONS`: Vector dimensions (default: `3072`)
+- `MAX_CONTEXT_TOKENS`: Maximum tokens for RAG context (default: `8000`)
+- `EMBEDDING_MODEL`: OpenAI model to use (default: `text-embedding-3-small`)
+- `EMBEDDING_DIMENSIONS`: Vector dimensions (default: `1536`)
+- `MODEL`: OpenAI LLM model to use (default: `gpt-4`)
+- `SIMILARITY_THRESHOLD`: Threshold for vector similarity (default: `0.3`)
+- `TOP_K`: Maximum number of context snippets to retrieve (default: `5`)
 - `CHUNK_SIZE`: Characters per document chunk (default: `3000`)
 - `CHUNK_OVERLAP`: Character overlap between chunks (default: `500`)
 - `SUMMARY_LENGTH`: Target character length for summaries (default: `3000`)
@@ -245,13 +252,16 @@ This application is deployed on Heroku with:
   - `translator`: Background translation service (polls every 60s)
   - `embedder`: Vector embeddings with chunking and summarization (daily at 00:30 UTC)
   - `web`: Flask-based status dashboard
+  - `bot`: Telegram bot interface for the RAG-LLM system
 - Environment variables for configuration:
   - `DATABASE_URL`: Set automatically by Heroku PostgreSQL add-on
   - `DEEPL_API_KEY`: For DeepL translation API
-  - `OPENAI_API_KEY`: For OpenAI embeddings API
+  - `OPENAI_API_KEY`: For OpenAI embeddings and LLM API
+  - `TELEGRAM_API_KEY`: For Telegram bot interface
 - PostgreSQL extensions:
   - `pgvector`: Enabled for vector storage and search
 - URL: https://latvian-laws-06e89c613b8a.herokuapp.com/
+- Telegram Bot: @latvian_laws_bot
 
 ### Monitoring
 
@@ -270,7 +280,40 @@ The application provides a simple monitoring dashboard:
 To run tests on Heroku:
 
 ```bash
-heroku run python test_db.py --app latvian-laws
-heroku run python test_translator.py --app latvian-laws
-heroku run python test_embedder_enhanced.py --app latvian-laws
+heroku run python tests/test_db.py --app latvian-laws
+heroku run python tests/test_translator.py --app latvian-laws
+heroku run python tests/test_embedder_enhanced.py --app latvian-laws
 ```
+
+## Repository Structure
+
+The codebase is organized as follows:
+
+- Core components:
+  - `scraper.py`: Law document scraper
+  - `translator.py`: Document translator
+  - `embedder_optimized.py`: Document embedder
+  - `rag.py`: Retrieval augmented generation
+  - `rag_with_llm.py`: Integration of RAG and LLM systems
+  - `llm_client/`: LLM client modules
+  - `telegram_llm_bot.py`: Telegram bot interface
+  - `app.py`: Web interface
+  
+- Support directories:
+  - `tests/`: Test scripts
+  - `legacy/`: Previous versions and deprecated files
+  - `development/`: Development and experimental files
+
+## Telegram Bot Usage
+
+The Telegram bot provides a simple interface to the RAG-LLM system:
+
+1. Start the bot by sending `/start` to @latvian_laws_bot
+2. Send a question about Latvian laws, for example:
+   - "What are the VAT tax rates in Latvia?"
+   - "How are digital signatures regulated in Latvia?"
+   - "What are the requirements for personal income tax in Latvia?"
+3. The bot will:
+   - Search for relevant context in the database
+   - Generate an answer based on the retrieved context
+   - Provide source links for the information

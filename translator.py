@@ -474,9 +474,9 @@ class Translator:
         """Run tests to verify translator functionality."""
         logger.info("Running translator tests to verify functionality...")
         try:
-            # Run the test_translator.py script
+            # Run the test_translator.py script from tests folder
             result = subprocess.run(
-                ["python", "test_translator.py"], 
+                ["python", "tests/test_translator.py"], 
                 capture_output=True, 
                 text=True
             )

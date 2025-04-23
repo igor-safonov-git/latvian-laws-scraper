@@ -11,11 +11,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Web: `python app.py`
 - Run tests (Heroku only, never locally):
   - All tests: Run each test script separately on Heroku
-  - Scraper: `heroku run python test_db.py [-v/--verbose] --app latvian-laws`
-  - Translator: `heroku run python test_translator.py [-v/--verbose] [--check-one] --app latvian-laws`
-  - Embedder: `heroku run python test_embedder_enhanced.py [-v/--verbose] --app latvian-laws`
-  - Embedder Edge Cases: `heroku run python test_embedder_edge_cases.py [-v/--verbose] --app latvian-laws`
-  - Memory Usage: `heroku run python test_memory_usage.py [--size N] --app latvian-laws`
+  - Scraper: `heroku run python tests/test_db.py [-v/--verbose] --app latvian-laws`
+  - Translator: `heroku run python tests/test_translator.py [-v/--verbose] [--check-one] --app latvian-laws`
+  - Embedder: `heroku run python tests/test_embedder_enhanced.py [-v/--verbose] --app latvian-laws`
+  - Embedder Edge Cases: `heroku run python tests/test_embedder_edge_cases.py [-v/--verbose] --app latvian-laws`
+  - Memory Usage: `heroku run python tests/test_memory_usage.py [--size N] --app latvian-laws`
   - Single test focus: Use the `--check-one` flag for translator tests
 - Deploy: `git push heroku main`
 - Dyno management:
@@ -23,6 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Start/stop translator: `heroku ps:scale translator=1/0 --app latvian-laws`
   - Start/stop embedder: `heroku ps:scale embedder=1/0 --app latvian-laws`
   - Start/stop web: `heroku ps:scale web=1/0 --app latvian-laws`
+  - Start/stop bot: `heroku ps:scale bot=1/0 --app latvian-laws`
 - Logs: `heroku logs --tail --app latvian-laws`
 - Database: `heroku pg:psql --app latvian-laws`
 
@@ -50,6 +51,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Translator: Translates documents from Latvian to English (polls every 60s)
   - Embedder: Generates document chunks, summaries, and embeddings (daily at 00:30 UTC)
   - Web: Flask-based status dashboard (/ and /status endpoints)
+  - Bot: Telegram bot interface for the RAG-LLM system (telegram_llm_bot.py)
 - External APIs:
   - DeepL: For Latvian to English translation
-  - OpenAI: For text embeddings (text-embedding-3-large/small models)
+  - OpenAI: For text embeddings (text-embedding-3-small model) and RAG-LLM integration
+
+## Repository Structure
+- Core components:
+  - `scraper.py`: Law document scraper
+  - `translator.py`: Document translator
+  - `embedder_optimized.py`: Document embedder
+  - `rag.py`: Retrieval augmented generation
+  - `llm_client/`: LLM client modules
+  - `telegram_llm_bot.py`: Telegram bot interface
+  - `app.py`: Web interface
+  
+- Support directories:
+  - `tests/`: Test scripts
+  - `legacy/`: Previous versions and deprecated files
+  - `development/`: Development and experimental files

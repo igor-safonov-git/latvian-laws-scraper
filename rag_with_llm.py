@@ -26,24 +26,33 @@ async def rag_with_llm(question: str):
     
     print(f"Found {len(contexts)} relevant passages")
     
-    # Extract text from context results
-    context_texts = [ctx["text"] for ctx in contexts]
+    # Extract text from context results and filter out empty or None values
+    context_texts = []
+    for ctx in contexts:
+        if ctx.get("text") and ctx["text"].strip():
+            # Add some content around the text snippets to make them more usable
+            formatted_text = f"From {ctx['url']}:\n{ctx['text']}"
+            context_texts.append(formatted_text)
+    
+    if not context_texts:
+        print("Sorry, the retrieved context didn't contain usable text.")
+        return
     
     # Pass the question and context to the LLM
     print("Generating answer...")
     
-    try:
-        response = await answer(question, context_texts)
-        
-        print("\nAnswer:")
-        print(response)
-        
-        print("\nSources:")
-        for i, ctx in enumerate(contexts):
-            print(f"- {ctx['url']}")
+    response = await answer(question, context_texts)
     
-    except Exception as e:
-        print(f"Error generating answer: {str(e)}")
+    print("\nAnswer:")
+    print(response)
+    
+    print("\nSources:")
+    urls_seen = set()
+    for ctx in contexts:
+        url = ctx.get('url', '')
+        if url and url not in urls_seen:
+            print(f"- {url}")
+            urls_seen.add(url)
 
 if __name__ == "__main__":
     # Get the question from command line arguments or prompt the user
