@@ -173,6 +173,7 @@ class LatvianFormatter:
     def format_text(self, latvian_text: str, format_type: str = "bullet_points") -> str:
         """
         Format Latvian text into structured format using EuroLLM via HF endpoint.
+        For large texts, processes them in chunks and combines the results.
         
         Args:
             latvian_text: Raw Latvian text to format
@@ -185,22 +186,121 @@ class LatvianFormatter:
             logger.error("Memory usage too high to format text")
             return ""
         
-        # Truncate text if too long (model context limit)
-        max_chars = 6000  # Safe limit for context window
-        if len(latvian_text) > max_chars:
-            logger.warning(f"Truncating text from {len(latvian_text)} to {max_chars} chars")
-            latvian_text = latvian_text[:max_chars]
+        # Maximum chunk size that can be safely processed
+        MAX_CHUNK_SIZE = 6000
         
-        try:
-            # Prepare prompt based on format type
-            if format_type == "bullet_points":
-                instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar aizzīmētiem punktiem. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
-            elif format_type == "sections":
-                instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar sekcijām un apakšsekcijām. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
-            else:
-                instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+        # If text is small enough, process it directly
+        if len(latvian_text) <= MAX_CHUNK_SIZE:
+            return self._format_chunk(latvian_text, format_type)
+        
+        # For large texts, split into chunks and format each chunk
+        logger.info(f"Text is too large ({len(latvian_text)} chars), processing in chunks")
+        
+        # Split the text into logical chunks (paragraphs or sections)
+        chunks = self._split_into_logical_chunks(latvian_text, MAX_CHUNK_SIZE)
+        logger.info(f"Split text into {len(chunks)} chunks")
+        
+        # Format each chunk
+        formatted_chunks = []
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Formatting chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
             
-            # Create messages for chat API
+            # Add context to non-first chunks to maintain continuity
+            if i > 0:
+                chunk_instruction = "Turpini formatēt šo juridisko teksta daļu. Saglabā iepriekšējo formatējuma stilu."
+                if format_type == "bullet_points":
+                    chunk_instruction += " Turpini ar aizzīmētiem punktiem."
+                elif format_type == "sections":
+                    chunk_instruction += " Turpini ar sekcijām un apakšsekcijām."
+            else:
+                # Use regular instruction for first chunk
+                if format_type == "bullet_points":
+                    chunk_instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar aizzīmētiem punktiem. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+                elif format_type == "sections":
+                    chunk_instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar sekcijām un apakšsekcijām. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+                else:
+                    chunk_instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+            
+            # Format this chunk
+            formatted_chunk = self._format_chunk_with_instruction(chunk, chunk_instruction)
+            if formatted_chunk:
+                formatted_chunks.append(formatted_chunk)
+            
+            # Apply delay between chunks to avoid rate limiting
+            delay_time = max(BATCH_DELAY_MS / 1000, 0.5)
+            logger.info(f"Delaying {delay_time:.2f}s before next chunk")
+            time.sleep(delay_time)
+        
+        # Combine the formatted chunks
+        if formatted_chunks:
+            combined_text = "\n\n".join(formatted_chunks)
+            logger.info(f"Successfully formatted entire text in chunks ({len(combined_text)} chars)")
+            return combined_text
+        else:
+            logger.error("Failed to format any chunks")
+            return ""
+    
+    def _split_into_logical_chunks(self, text: str, max_size: int) -> List[str]:
+        """
+        Split text into logical chunks respecting paragraph or section boundaries.
+        
+        Args:
+            text: Text to split
+            max_size: Maximum size of each chunk
+            
+        Returns:
+            List of text chunks
+        """
+        # Split by double newlines (paragraphs)
+        paragraphs = text.split("\n\n")
+        
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for paragraph in paragraphs:
+            # Skip empty paragraphs
+            if not paragraph.strip():
+                continue
+                
+            para_size = len(paragraph)
+            
+            # If a single paragraph is too large, split it by sentences
+            if para_size > max_size:
+                # Split by sentence endings (period, question mark, etc. followed by space)
+                sentences = [s.strip() + "." for s in paragraph.replace(". ", ".|").split("|") if s.strip()]
+                
+                for sentence in sentences:
+                    if current_size + len(sentence) + 1 <= max_size:
+                        current_chunk.append(sentence)
+                        current_size += len(sentence) + 1  # +1 for newline
+                    else:
+                        # Finish current chunk and start a new one
+                        if current_chunk:
+                            chunks.append("\n".join(current_chunk))
+                        current_chunk = [sentence]
+                        current_size = len(sentence)
+            
+            # If paragraph fits in the current chunk
+            elif current_size + para_size + 2 <= max_size:  # +2 for double newline
+                current_chunk.append(paragraph)
+                current_size += para_size + 2
+            else:
+                # Finish current chunk and start a new one
+                if current_chunk:
+                    chunks.append("\n\n".join(current_chunk))
+                current_chunk = [paragraph]
+                current_size = para_size
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+        
+        return chunks
+    
+    def _format_chunk_with_instruction(self, chunk_text: str, instruction: str) -> str:
+        """Format a chunk with a specific instruction."""
+        try:
             messages = [
                 {
                     "role": "system",
@@ -208,11 +308,9 @@ class LatvianFormatter:
                 },
                 {
                     "role": "user", 
-                    "content": f"{instruction}\n\nTEKSTS:\n{latvian_text}"
+                    "content": f"{instruction}\n\nTEKSTS:\n{chunk_text}"
                 }
             ]
-            
-            logger.info("Sending request to Hugging Face endpoint...")
             
             # Call the API
             response = self.client.chat.completions.create(
@@ -225,9 +323,24 @@ class LatvianFormatter:
             
             # Extract the response
             formatted_text = response.choices[0].message.content
-            
-            logger.info(f"Successfully formatted text ({len(formatted_text)} chars)")
             return formatted_text
+            
+        except Exception as e:
+            logger.error(f"Error formatting chunk: {str(e)}")
+            return ""
+            
+    def _format_chunk(self, latvian_text: str, format_type: str) -> str:
+        """Format a single chunk with the standard instructions."""
+        try:
+            # Prepare prompt based on format type
+            if format_type == "bullet_points":
+                instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar aizzīmētiem punktiem. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+            elif format_type == "sections":
+                instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar sekcijām un apakšsekcijām. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+            else:
+                instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
+            
+            return self._format_chunk_with_instruction(latvian_text, instruction)
             
         except Exception as e:
             logger.error(f"Error formatting text: {str(e)}")
