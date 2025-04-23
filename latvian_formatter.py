@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Latvian text formatter using EuroLLM-9B-Instruct model.
+Latvian text formatter using EuroLLM-9B-Instruct model via Hugging Face endpoint.
 This script transforms raw Latvian texts into structured formats like bullet points or sections.
 """
 import os
@@ -8,14 +8,13 @@ import gc
 import json
 import psutil
 import logging
-import asyncio
+import time
 import psycopg2
 import psycopg2.extras
 import argparse
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
@@ -40,9 +39,8 @@ logger.addHandler(file_handler)
 DATABASE_URL = os.getenv("DATABASE_URL")
 BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "100"))
 MEMORY_LIMIT_MB = int(os.getenv("MEMORY_LIMIT_MB", "4000"))
-MODEL_ID = os.getenv("FORMATTER_MODEL_ID", "utter-project/EuroLLM-9B-Instruct")
-
-os.environ["TRANSFORMERS_CACHE"] = "/tmp/transformers_cache"
+HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://uyba45g29g72pbos.us-east4.gcp.endpoints.huggingface.cloud/v1/")
+HF_API_KEY = os.getenv("HF_API_KEY")
 
 class MemoryGuard:
     """Monitors memory usage and prevents exceeding limits."""
@@ -147,40 +145,34 @@ class DatabaseConnector:
             return False
 
 class LatvianFormatter:
-    """Formats Latvian texts into structured formats using EuroLLM model."""
+    """Formats Latvian texts into structured formats using EuroLLM model via HF endpoint."""
     
     def __init__(self):
         """Initialize the formatter service."""
         self.db = DatabaseConnector(DATABASE_URL)
-        self.tokenizer = None
-        self.model = None
+        self.client = None
         
-    def load_model(self) -> bool:
-        """Load the EuroLLM model and tokenizer."""
+    def connect_api(self) -> bool:
+        """Connect to the Hugging Face API endpoint."""
         try:
-            logger.info(f"Loading EuroLLM model: {MODEL_ID}")
-            self.tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-            
-            # Check for GPU availability
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Using device: {device}")
-            
-            # Load model with memory efficiency options
-            self.model = AutoModelForCausalLM.from_pretrained(
-                MODEL_ID,
-                device_map=device,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32
+            if not HF_API_KEY:
+                logger.error("HF_API_KEY not found in environment variables")
+                return False
+                
+            self.client = OpenAI(
+                base_url=HF_ENDPOINT,
+                api_key=HF_API_KEY
             )
             
-            logger.info("Model loaded successfully")
+            logger.info(f"Connected to Hugging Face endpoint at {HF_ENDPOINT}")
             return True
         except Exception as e:
-            logger.error(f"Failed to load model: {str(e)}")
+            logger.error(f"Failed to connect to Hugging Face API: {str(e)}")
             return False
     
     def format_text(self, latvian_text: str, format_type: str = "bullet_points") -> str:
         """
-        Format Latvian text into structured format using EuroLLM.
+        Format Latvian text into structured format using EuroLLM via HF endpoint.
         
         Args:
             latvian_text: Raw Latvian text to format
@@ -208,10 +200,11 @@ class LatvianFormatter:
             else:
                 instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
             
+            # Create messages for chat API
             messages = [
                 {
                     "role": "system",
-                    "content": "Tu esi EuroLLM — AI asistents un eksperts Latvijas tiesību jomā, kas specializējas juridisko tekstu strukturēšanā. Tev ir dziļas zināšanas par Latvijas likumdošanu un juridisko terminoloģiju. Tu pārvērto juridiskos tekstus precīzā, skaidrā un labi strukturētā formātā."
+                    "content": "Tu esi EuroLLM — AI asistents, kas specializējas Eiropas valodās, īpaši latviešu valodā. Tu palīdzi pārveidot tekstus skaidrā, strukturētā formātā."
                 },
                 {
                     "role": "user", 
@@ -219,30 +212,19 @@ class LatvianFormatter:
                 }
             ]
             
-            # Tokenize and generate
-            inputs = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+            logger.info("Sending request to Hugging Face endpoint...")
             
-            # Move to GPU if available
-            if torch.cuda.is_available():
-                inputs = inputs.to("cuda")
-            
-            # Generate with appropriate parameters
-            outputs = self.model.generate(
-                inputs, 
-                max_new_tokens=2048,
+            # Call the API
+            response = self.client.chat.completions.create(
+                model="tgi",
+                messages=messages,
+                max_tokens=2048,
                 temperature=0.7,
-                top_p=0.9,
-                do_sample=True
+                top_p=0.9
             )
             
-            # Decode output
-            formatted_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract just the assistant's response
-            # Find where the assistant's response starts
-            assist_marker = "Assistant: "
-            if assist_marker in formatted_text:
-                formatted_text = formatted_text.split(assist_marker, 1)[1]
+            # Extract the response
+            formatted_text = response.choices[0].message.content
             
             logger.info(f"Successfully formatted text ({len(formatted_text)} chars)")
             return formatted_text
@@ -260,9 +242,9 @@ class LatvianFormatter:
             logger.error("Failed to connect to database, aborting batch")
             return
         
-        # Load model
-        if not self.load_model():
-            logger.error("Failed to load model, aborting batch")
+        # Connect to API
+        if not self.connect_api():
+            logger.error("Failed to connect to Hugging Face API, aborting batch")
             self.db.disconnect()
             return
         
@@ -300,7 +282,6 @@ class LatvianFormatter:
                 logger.info(f"Delaying {delay_time:.2f}s before next document")
                 
                 # Sleep between documents
-                import time
                 time.sleep(delay_time)
                 
                 # Help garbage collection
@@ -314,14 +295,6 @@ class LatvianFormatter:
             logger.error(f"Batch processing failed: {str(e)}")
         
         finally:
-            # Release GPU memory
-            if hasattr(self, 'model') and self.model is not None:
-                del self.model
-            if hasattr(self, 'tokenizer') and self.tokenizer is not None:
-                del self.tokenizer
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            gc.collect()
-            
             # Close database connection
             self.db.disconnect()
 

@@ -1,6 +1,6 @@
 # Latvian Text Formatter
 
-This tool formats Latvian legal texts into structured formats (bullet points, sections) using the EuroLLM-9B-Instruct multilingual model.
+This tool formats Latvian legal texts into structured formats (bullet points, sections) using the EuroLLM-9B-Instruct multilingual model via a Hugging Face endpoint.
 
 ## Features
 
@@ -8,6 +8,7 @@ This tool formats Latvian legal texts into structured formats (bullet points, se
 - Memory-efficient processing for large documents
 - Database integration for batch processing
 - Standalone testing script for file-based formatting
+- Uses Hugging Face API endpoint instead of loading model locally
 
 ## Requirements
 
@@ -15,6 +16,20 @@ Install dependencies:
 ```
 pip install -r requirements.txt
 ```
+
+## Environment Variables
+
+Create a `.env` file with:
+
+```
+DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+BATCH_DELAY_MS=100
+MEMORY_LIMIT_MB=4000
+HF_ENDPOINT=https://uyba45g29g72pbos.us-east4.gcp.endpoints.huggingface.cloud/v1/
+HF_API_KEY=your_huggingface_api_key
+```
+
+You must obtain a valid Hugging Face API key and set it in the `HF_API_KEY` environment variable.
 
 ## Usage
 
@@ -44,17 +59,6 @@ Parameters:
 - `--output`, `-o`: Output file for formatted text
 - `--format-type`, `-t`: Type of formatting to apply
 
-## Environment Variables
-
-Create a `.env` file with:
-
-```
-DATABASE_URL=postgresql://user:password@localhost:5432/dbname
-BATCH_DELAY_MS=100
-MEMORY_LIMIT_MB=4000
-FORMATTER_MODEL_ID=utter-project/EuroLLM-9B-Instruct
-```
-
 ## Database Schema
 
 The script expects a database with a table structure:
@@ -74,4 +78,4 @@ CREATE TABLE raw_docs (
 
 - EuroLLM-9B-Instruct is optimized for Latvian and other European languages
 - For large documents, the script truncates text to 6000 characters by default
-- GPU acceleration is used when available, falling back to CPU 
+- Using the Hugging Face endpoint reduces memory requirements and simplifies deployment 

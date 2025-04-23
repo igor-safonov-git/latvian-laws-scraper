@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Test script for Latvian text formatting using EuroLLM-9B-Instruct.
+Test script for Latvian text formatting using EuroLLM-9B-Instruct via Hugging Face endpoint.
 This script allows testing formatting on a single text file without database dependency.
 """
 import os
 import gc
 import argparse
 import logging
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -17,24 +20,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("test_formatter")
 
+# Get environment variables
+HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://uyba45g29g72pbos.us-east4.gcp.endpoints.huggingface.cloud/v1/")
+HF_API_KEY = os.getenv("HF_API_KEY")
+
 def format_latvian_text(input_file, output_file, format_type="bullet_points"):
-    """Format Latvian text using EuroLLM model."""
+    """Format Latvian text using EuroLLM via Hugging Face endpoint."""
     try:
-        # Load the model
-        model_id = "utter-project/EuroLLM-9B-Instruct"
-        logger.info(f"Loading model: {model_id}")
+        # Check API key
+        if not HF_API_KEY:
+            logger.error("HF_API_KEY not found in environment variables")
+            return False
         
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
-        
-        # Check for GPU
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device: {device}")
-        
-        # Load model with appropriate settings
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map=device,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32
+        # Initialize OpenAI client with Hugging Face endpoint
+        logger.info(f"Connecting to Hugging Face endpoint at {HF_ENDPOINT}")
+        client = OpenAI(
+            base_url=HF_ENDPOINT,
+            api_key=HF_API_KEY
         )
         
         # Read input file
@@ -56,11 +58,11 @@ def format_latvian_text(input_file, output_file, format_type="bullet_points"):
         else:
             instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
         
-        # Create messages for chat template
+        # Create messages for chat API
         messages = [
             {
                 "role": "system",
-                "content": "Tu esi EuroLLM — AI asistents un eksperts Latvijas tiesību jomā, kas specializējas juridisko tekstu strukturēšanā. Tev ir dziļas zināšanas par Latvijas likumdošanu un juridisko terminoloģiju. Tu pārvērto juridiskos tekstus precīzā, skaidrā un labi strukturētā formātā."
+                "content": "Tu esi EuroLLM — AI asistents, kas specializējas Eiropas valodās, īpaši latviešu valodā. Tu palīdzi pārveidot tekstus skaidrā, strukturētā formātā."
             },
             {
                 "role": "user", 
@@ -68,30 +70,18 @@ def format_latvian_text(input_file, output_file, format_type="bullet_points"):
             }
         ]
         
-        # Tokenize and generate
-        logger.info("Formatting text...")
-        inputs = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
-        
-        # Move to GPU if available
-        if torch.cuda.is_available():
-            inputs = inputs.to("cuda")
-        
-        # Generate with appropriate parameters
-        outputs = model.generate(
-            inputs, 
-            max_new_tokens=2048,
+        # Call the API
+        logger.info("Sending request to Hugging Face endpoint...")
+        response = client.chat.completions.create(
+            model="tgi",
+            messages=messages,
+            max_tokens=2048,
             temperature=0.7,
-            top_p=0.9,
-            do_sample=True
+            top_p=0.9
         )
         
-        # Decode output
-        formatted_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Extract just the assistant's response
-        assist_marker = "Assistant: "
-        if assist_marker in formatted_text:
-            formatted_text = formatted_text.split(assist_marker, 1)[1]
+        # Extract the response
+        formatted_text = response.choices[0].message.content
         
         # Write to output file
         logger.info(f"Writing formatted text to: {output_file}")
@@ -100,10 +90,7 @@ def format_latvian_text(input_file, output_file, format_type="bullet_points"):
         
         logger.info("Formatting complete!")
         
-        # Clean up memory
-        del model
-        del tokenizer
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        # Clean up
         gc.collect()
         
         return True
