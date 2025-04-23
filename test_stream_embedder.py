@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger("test_stream_embedder")
 
 # Import the streaming embedder directly
-from embedder_stream import EmbedderService, DatabaseConnector
+from embedder_optimized import OptimizedEmbedderService, AsyncDatabaseConnector
 
 def get_connection():
     """Get a database connection."""
@@ -114,8 +114,8 @@ async def test_streaming_embedder(database_url: str, doc_info: Dict[str, Any]):
     """Test the streaming embedder with the specified document."""
     logger.info(f"Testing streaming embedder with {doc_info['size_kb']}KB document")
     
-    # Initialize the embedder service
-    service = EmbedderService()
+    # Initialize the optimized embedder service
+    service = OptimizedEmbedderService()
     
     # Set up the service
     setup_success = await service.setup()
@@ -129,29 +129,35 @@ async def test_streaming_embedder(database_url: str, doc_info: Dict[str, Any]):
         return False
     
     try:
-        # Get the document from the database
-        docs = await service.db.get_translations()
-        
-        if not docs:
-            logger.error("No documents found in the database")
-            return False
-        
-        # Find our test document
-        doc = None
-        for d in docs:
-            if d["trans_id"] == doc_info["id"]:
-                doc = d
-                break
-        
-        if not doc:
-            logger.error(f"Test document {doc_info['id']} not found")
-            return False
-        
-        # Process the document
-        async with aiohttp.ClientSession() as session:
-            start_time = asyncio.get_event_loop().time()
-            success_chunks, failed_chunks = await service.process_document(doc, session)
-            end_time = asyncio.get_event_loop().time()
+        # Use a modified approach to fetch the document directly
+        async with service.conn.transaction():
+            # Directly fetch our test document
+            query = """
+                SELECT id AS trans_id, url, fetched_at, translated_text
+                FROM raw_docs
+                WHERE id = $1 AND translated_text IS NOT NULL
+            """
+            record = await service.conn.fetchrow(query, doc_info["id"])
+            
+            if not record:
+                logger.error(f"Test document {doc_info['id']} not found")
+                return False
+                
+            # Convert to a dictionary
+            doc = {
+                "trans_id": record["trans_id"],
+                "url": record["url"],
+                "fetched_at": record["fetched_at"],
+                "translated_text": record["translated_text"]
+            }
+            
+            logger.info(f"Found test document with {len(doc['translated_text'])} characters")
+            
+            # Process the document
+            async with aiohttp.ClientSession() as session:
+                start_time = asyncio.get_event_loop().time()
+                success_chunks, failed_chunks = await service.process_document(doc, session)
+                end_time = asyncio.get_event_loop().time()
             
         # Log results
         logger.info(f"Document processing completed in {end_time - start_time:.2f}s")
