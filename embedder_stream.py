@@ -50,16 +50,8 @@ file_handler.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 
 # Initialize OpenAI client
-# Ensure compatibility with older versions
-try:
-    openai_client = AsyncOpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        # Skip proxies to ensure compatibility with Heroku environment
-        http_client=httpx.AsyncClient(proxies=None)
-    )
-except TypeError:
-    # Fallback for older versions or if proxies param causes issues
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Simple initialization for compatibility with all versions
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 encoder = tiktoken.get_encoding("cl100k_base")  # Used by text-embedding models
 
