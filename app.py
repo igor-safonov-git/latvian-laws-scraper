@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from flask import Flask, jsonify, send_from_directory
 import os
+import sys
 import psycopg2
 from dotenv import load_dotenv
 import json
@@ -44,10 +45,42 @@ def export_index():
     # Ensure index exists
     if not os.path.exists(os.path.join(export_dir, 'index.html')):
         return jsonify({
-            "error": "No exports available. Run 'python export_documents.py' first."
+            "error": "No exports available.",
+            "run_export": "To generate exports, visit /run-export endpoint"
         }), 404
     
     return send_from_directory(export_dir, 'index.html')
+
+@app.route('/run-export')
+def run_export():
+    """Run the export_documents script to generate exports."""
+    try:
+        # Import the export_documents module
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        from export_documents import export_documents
+        
+        # Set up export directory (use /tmp on Heroku)
+        export_dir = "/tmp/export" if "DYNO" in os.environ else os.path.join(app.static_folder, 'export')
+        
+        # Run the export function
+        success = export_documents(export_dir)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": "Document export completed successfully",
+                "url": "/export"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to export documents"
+            }), 500
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error running export: {str(e)}"
+        }), 500
 
 @app.route('/export/<path:filename>')
 def export_file(filename):
