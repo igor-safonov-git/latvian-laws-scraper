@@ -210,7 +210,7 @@ async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[st
                     text_preview = "No preview available"
             
             result = {
-                "text": text_preview,
+                "text": text_preview if text_preview is not None else "No preview available",
                 "url": metadata.get("url", "Unknown URL"),
                 "fetched_at": metadata.get("fetched_at", "Unknown date"),
                 "score": row["score"],
@@ -320,7 +320,10 @@ async def test_retrieve():
         print(f"\nResult {i+1}:")
         print(f"URL: {result['url']}")
         print(f"Fetched: {result['fetched_at']}")
-        print(f"Text snippet: {result['text'][:200]}...")
+        if result.get('text'):
+            print(f"Text snippet: {result['text'][:200]}...")
+        else:
+            print("Text snippet: No text available")
 
 
 if __name__ == "__main__":
