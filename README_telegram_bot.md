@@ -15,7 +15,7 @@ A Telegram bot interface for the Latvian Laws RAG-LLM system that allows users t
 1. Create a Telegram bot using [BotFather](https://t.me/botfather) and get your bot token
 2. Add the token to your `.env` file:
    ```
-   TELEGRAM_TOKEN=your_telegram_bot_token
+   TELEGRAM_API_KEY=your_telegram_bot_token
    OPENAI_API_KEY=your_openai_api_key
    MODEL=gpt-4
    DATABASE_URL=your_postgres_db_url

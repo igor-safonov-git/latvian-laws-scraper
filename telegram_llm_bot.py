@@ -30,10 +30,10 @@ logging.basicConfig(
 logger = logging.getLogger("telegram_bot")
 
 # Telegram token
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_API_KEY")
 if not TELEGRAM_TOKEN:
-    logger.error("No TELEGRAM_TOKEN found in environment variables")
-    raise ValueError("TELEGRAM_TOKEN not set in environment variables")
+    logger.error("No TELEGRAM_API_KEY found in environment variables")
+    raise ValueError("TELEGRAM_API_KEY not set in environment variables")
 
 # Track ongoing conversations
 active_users: Dict[int, bool] = {}
