@@ -18,6 +18,7 @@ from datetime import datetime
 
 import psycopg2
 import psycopg2.extras
+import aiohttp
 from dotenv import load_dotenv
 
 # Setup logging
