@@ -183,18 +183,34 @@ async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[st
             # Log the full metadata for debugging
             try:
                 logger.info(f"Document {i} full metadata: {json.dumps(row['metadata'])}")
-            except:
+                logger.info(f"Document {i} metadata type: {type(row['metadata']).__name__}")
+            except Exception as e:
                 logger.info(f"Document {i} metadata (not JSON serializable): {row['metadata']}")
+                logger.info(f"Document {i} metadata error: {str(e)}")
             
             metadata = row["metadata"] if row["metadata"] else {}
             
-            # Check if text_preview exists and log it
+            # Check if text_preview exists and log it with more details
             text_preview = metadata.get("text_preview")
             logger.info(f"Document {i} text_preview: {text_preview}")
+            logger.info(f"Document {i} metadata keys: {list(metadata.keys()) if metadata else []}")
             
-            # Create result with debug info
+            # Create result with debug info and fallback text
+            # Handle the case where text_preview might be missing
+            if not text_preview:
+                logger.warning(f"Document {i} missing text_preview field, generating fallback")
+                # Create a fallback preview from raw metadata string if available
+                try:
+                    metadata_str = str(row.get('metadata', '{}'))
+                    if len(metadata_str) > 20:
+                        text_preview = f"Metadata-based preview: {metadata_str[:100]}..."
+                    else:
+                        text_preview = "No preview available (metadata issue)"
+                except:
+                    text_preview = "No preview available"
+            
             result = {
-                "text": text_preview if text_preview else "No preview available",
+                "text": text_preview,
                 "url": metadata.get("url", "Unknown URL"),
                 "fetched_at": metadata.get("fetched_at", "Unknown date"),
                 "score": row["score"],
