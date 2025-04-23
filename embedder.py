@@ -207,16 +207,25 @@ class AsyncDatabaseConnector:
             logger.info("Database connection closed")
     
     async def clear_vectors(self) -> bool:
-        """Clear all vectors from the database with memory safety check."""
+        """Clear all vectors from all vector tables unconditionally."""
         if not await MemoryGuard.check_memory():
             logger.error("Memory usage too high to clear vectors")
             return False
         
         try:
-            # Use delete with batching for better memory usage
-            result = await self.conn.execute("DELETE FROM docs")
-            affected = int(result.split(" ")[1]) if "DELETE" in result else 0
-            logger.info(f"Cleared {affected} vectors from database")
+            # Use TRUNCATE for faster clearing of all vector tables
+            logger.info("Unconditionally clearing ALL vector tables")
+            
+            # Clear main document vectors
+            result1 = await self.conn.execute("TRUNCATE TABLE docs")
+            
+            # Clear chunk vectors
+            result2 = await self.conn.execute("TRUNCATE TABLE doc_chunks")
+            
+            # Clear summary vectors
+            result3 = await self.conn.execute("TRUNCATE TABLE doc_summaries")
+            
+            logger.info("Successfully cleared all vector tables (docs, doc_chunks, doc_summaries)")
             
             # Help garbage collector
             gc.collect()
@@ -224,7 +233,7 @@ class AsyncDatabaseConnector:
             
             return True
         except Exception as e:
-            logger.error(f"Failed to clear vectors: {str(e)}")
+            logger.error(f"Failed to clear vector tables: {str(e)}")
             return False
     
     async def stream_translations(self) -> AsyncIterator[Dict[str, Any]]:
@@ -561,7 +570,7 @@ class OptimizedEmbedderService:
     
     async def process_batch(self) -> None:
         """Process all pending translated documents with memory monitoring."""
-        logger.info("Starting nightly batch processing")
+        logger.info("Starting batch processing")
         logger.info(f"Initial memory usage: {MemoryGuard.get_memory_usage_mb():.2f}MB")
         
         # Connect to database
@@ -570,10 +579,12 @@ class OptimizedEmbedderService:
             return
         
         try:
-            # Clear previous vectors
+            # ALWAYS completely clear all vector tables on each run
+            logger.info("Starting with a fresh vector database - clearing ALL vector tables")
             if not await self.db.clear_vectors():
-                logger.error("Failed to clear vectors, aborting batch")
+                logger.error("Failed to clear vector tables, aborting batch")
                 return
+            logger.info("Vector tables cleared successfully. Starting document processing.")
             
             # Track processing stats
             total_docs = 0

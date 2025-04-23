@@ -5,6 +5,8 @@ An end-to-end system for scraping, translating, and searching Latvian legal docu
 ## Features
 
 - Scheduled scraping (daily at midnight UTC)
+- On-demand translation via DeepL API
+- On-demand vector embedding generation
 - Asynchronous fetching using aiohttp
 - HTML to text conversion with BeautifulSoup
 - PostgreSQL storage with content change detection
@@ -115,20 +117,24 @@ CREATE TABLE IF NOT EXISTS doc_summaries (
    - Run daily at 00:00 UTC
    - Fetch and parse each URL
    - Store raw content in PostgreSQL database
+   - Log results to the console and to a logfile
+3. To translate documents:
+   - Run the translator manually when needed:
+   ```bash
+   python translator.py
+   ```
+   - This will process a batch of untranslated documents
    - Translate text from Latvian to English using DeepL API
    - Store translated text and mark document as processed
-   - Log results to the console and to a logfile
-3. The embedder will:
-   - Run daily at 00:30 UTC (after translation completes)
-   - Check for new or modified translations
-   - When new translations are found:
-     - Clear previous embeddings
-     - Generate AI-powered summaries of each document
-     - Split documents into overlapping chunks with semantic boundary detection
-     - Generate embeddings for the full document, each chunk, and the summary
-     - Store all embeddings in their respective tables for multi-representation search
-     - Record timestamp of successful run
-   - Log embedding results to the console and to a logfile
+4. To generate embeddings:
+   - Run the embedder manually when needed:
+   ```bash
+   python embedder.py --once
+   ```
+   - This will **completely clear all vector tables** and regenerate all embeddings
+   - Generate AI-powered summaries of each document
+   - Split documents into overlapping chunks with semantic boundary detection
+   - Generate embeddings for the full document, each chunk, and the summary
 
 ## Local Development
 
@@ -247,12 +253,13 @@ python test_embedder_edge_cases.py --verbose
 
 This application is deployed on Heroku with:
 - PostgreSQL database add-on
-- Multiple dyno types:
+- Dyno types:
   - `scraper`: Scheduled web scraping (daily at midnight UTC)
-  - `translator`: Background translation service (polls every 60s)
-  - `embedder`: Vector embeddings with chunking and summarization (daily at 00:30 UTC)
   - `web`: Flask-based status dashboard
   - `bot`: Telegram bot interface for the RAG-LLM system
+- On-demand processes (run manually):
+  - `translator.py`: Document translation service
+  - `embedder.py --once`: Vector embeddings generation
 - Environment variables for configuration:
   - `DATABASE_URL`: Set automatically by Heroku PostgreSQL add-on
   - `DEEPL_API_KEY`: For DeepL translation API
@@ -262,6 +269,29 @@ This application is deployed on Heroku with:
   - `pgvector`: Enabled for vector storage and search
 - URL: https://latvian-laws-06e89c613b8a.herokuapp.com/
 - Telegram Bot: @latvian_laws_bot
+
+### Running Manual Processes on Heroku
+
+To run the translator on Heroku:
+```bash
+heroku run python translator.py --app latvian-laws
+```
+
+To run the embedder on Heroku:
+```bash
+heroku run python embedder.py --once --app latvian-laws
+```
+This command will completely clear all vector tables and regenerate ALL embeddings from scratch.
+
+To see if there are untranslated documents:
+```bash
+heroku run python -c "import psycopg2, os; conn = psycopg2.connect(os.environ['DATABASE_URL']); cur = conn.cursor(); cur.execute('SELECT COUNT(*) FROM raw_docs WHERE processed = FALSE AND raw_text IS NOT NULL'); print(f'Documents waiting for translation: {cur.fetchone()[0]}');" --app latvian-laws
+```
+
+To see if there are translated documents ready for embedding:
+```bash
+heroku run python -c "import psycopg2, os; conn = psycopg2.connect(os.environ['DATABASE_URL']); cur = conn.cursor(); cur.execute('SELECT COUNT(*) FROM raw_docs WHERE translated_text IS NOT NULL'); print(f'Documents ready for embedding: {cur.fetchone()[0]}');" --app latvian-laws
+```
 
 ### Monitoring
 

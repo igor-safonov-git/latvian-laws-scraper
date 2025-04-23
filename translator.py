@@ -562,7 +562,7 @@ class Translator:
             return stats
 
     async def start(self) -> None:
-        """Start the translator service in continuous mode."""
+        """Run the translator service once to process a batch of documents."""
         self.setup()
 
         # Check API key status
@@ -572,33 +572,22 @@ class Translator:
                 logger.info("DeepL API key verified successfully")
             else:
                 logger.error("DeepL API key verification failed - translation cannot proceed")
-                logger.error("Update DEEPL_API_KEY in Heroku config with a valid API key")
+                logger.error("Update DEEPL_API_KEY with a valid API key")
+                return
 
-        # Run initial translation job
+        # Run translation job once
+        logger.info("Running one-time translation job")
         await self.run_job()
-
-        # Run tests to verify translator functionality
-        self.run_tests()
         
-        # Continue running in a loop
-        logger.info(f"Translator service running in continuous mode with {self.poll_interval}s poll interval")
-        while True:
-            try:
-                # Wait for the poll interval
-                await asyncio.sleep(self.poll_interval)
-                
-                # Run the job
-                logger.info(f"Running scheduled translator job at {datetime.now().isoformat()}")
-                await self.run_job()
-                
-            except Exception as e:
-                logger.error(f"Error in translator service loop: {str(e)}")
-                # Don't exit, just continue the loop
-                await asyncio.sleep(5)  # Short delay before retry
+        # Display stats after completion
+        stats = self.get_translation_stats()
+        logger.info(f"Translation Stats: {json.dumps(stats, indent=2)}")
+        logger.info("Translation job completed successfully. Run this script again to process more documents.")
 
 
 async def main() -> None:
     """Main entry point for the translator service."""
+    logger.info("Starting on-demand translator service")
     translator = Translator()
     await translator.start()
 
