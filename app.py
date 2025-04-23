@@ -16,23 +16,55 @@ database_url = os.getenv("DATABASE_URL")
 @app.route('/')
 def index():
     """Simple status page showing the project is alive."""
+    # Check if exports are available
+    if "DYNO" in os.environ:
+        export_dir = "/tmp/export"
+    else:
+        export_dir = os.path.join(app.static_folder, 'export')
+    
+    export_available = os.path.exists(os.path.join(export_dir, "index.html"))
+    
     return jsonify({
         "status": "online",
         "name": "Latvian Laws Scraper",
         "description": "Asynchronous scraper for Latvian legal documents",
         "time": datetime.now(timezone.utc).isoformat(),
-        "export_url": "/export" if os.path.exists(os.path.join(app.static_folder, "export/index.html")) else None
+        "export_url": "/export" if export_available else None
     })
 
 @app.route('/export')
 def export_index():
     """Serve the index.html file from the export directory."""
-    return send_from_directory(os.path.join(app.static_folder, 'export'), 'index.html')
+    # Check if running on Heroku
+    if "DYNO" in os.environ:
+        export_dir = "/tmp/export"
+    else:
+        export_dir = os.path.join(app.static_folder, 'export')
+    
+    # Ensure index exists
+    if not os.path.exists(os.path.join(export_dir, 'index.html')):
+        return jsonify({
+            "error": "No exports available. Run 'python export_documents.py' first."
+        }), 404
+    
+    return send_from_directory(export_dir, 'index.html')
 
 @app.route('/export/<path:filename>')
 def export_file(filename):
     """Serve a specific file from the export directory."""
-    return send_from_directory(os.path.join(app.static_folder, 'export'), filename)
+    # Check if running on Heroku
+    if "DYNO" in os.environ:
+        export_dir = "/tmp/export"
+    else:
+        export_dir = os.path.join(app.static_folder, 'export')
+    
+    # Ensure file exists
+    if not os.path.exists(os.path.join(export_dir, filename)):
+        return jsonify({
+            "error": f"File '{filename}' not found."
+        }), 404
+        
+    return send_from_directory(export_dir, filename)
 
 @app.route('/status')
 def status():

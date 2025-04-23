@@ -182,8 +182,10 @@ def export_documents(output_dir: str, limit: int = None) -> bool:
 def main():
     """Run the document export script."""
     parser = argparse.ArgumentParser(description="Export documents from database to text files")
-    parser.add_argument("--output-dir", default="./static/export", 
-                        help="Directory to write files to (default: ./static/export)")
+    # Default to /tmp/export on Heroku, or ./static/export locally
+    default_dir = "/tmp/export" if "DYNO" in os.environ else "./static/export"
+    parser.add_argument("--output-dir", default=default_dir, 
+                        help=f"Directory to write files to (default: {default_dir})")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit to N most recent documents (default: all)")
     
