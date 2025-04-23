@@ -250,7 +250,10 @@ async def retrieve(question: str) -> List[Dict[str, Any]]:
         similar_docs = await query_similar_docs(embedding, TOP_K)
         
         # Log raw results before filtering
-        logger.info(f"Raw similarity scores: {[(i, f'{doc[\"score\"]:.4f}') for i, doc in enumerate(similar_docs)]}")
+        scores_log = []
+        for i, doc in enumerate(similar_docs):
+            scores_log.append((i, f"{doc['score']:.4f}"))
+        logger.info(f"Raw similarity scores: {scores_log}")
         
         # Filter results based on similarity threshold
         db_hits = []
