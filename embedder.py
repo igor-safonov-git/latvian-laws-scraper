@@ -295,7 +295,7 @@ class AsyncDatabaseConnector:
             logger.error(f"Failed to stream translations: {str(e)}")
     
     async def upsert(self, chunk_id: str, embedding: List[float], metadata: Dict[str, Any]) -> bool:
-        """Insert or update a document chunk with its embedding."""
+        """Insert or update a document chunk with its embedding in the docs table."""
         if not await MemoryGuard.check_memory():
             return False
             
@@ -317,6 +317,33 @@ class AsyncDatabaseConnector:
             return True
         except Exception as e:
             logger.error(f"Failed to upsert document {chunk_id}: {str(e)}")
+            return False
+    
+    async def insert_chunk(self, doc_id: str, chunk_id: str, chunk_index: int, chunk_text: str, 
+                         embedding: List[float], metadata: Dict[str, Any]) -> bool:
+        """Insert a chunk into the doc_chunks table with full text and embedding."""
+        if not await MemoryGuard.check_memory():
+            return False
+            
+        try:
+            # Convert metadata to JSON string
+            metadata_json = json.dumps(metadata)
+            
+            # Prepare embedding as a string for pgvector
+            embedding_str = str(embedding).replace("'", "").replace(", ", ",")
+            
+            # Insert into doc_chunks table
+            await self.conn.execute("""
+                INSERT INTO doc_chunks (id, chunk_id, chunk_index, chunk_text, metadata, embedding) 
+                VALUES ($1, $2, $3, $4, $5, $6::vector)
+                ON CONFLICT (chunk_id) DO UPDATE 
+                SET chunk_text = $4, metadata = $5, embedding = $6::vector
+            """, doc_id, chunk_id, chunk_index, chunk_text, metadata_json, embedding_str)
+            
+            logger.info(f"Inserted chunk {chunk_id} into doc_chunks table ({len(chunk_text)} chars)")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to insert chunk {chunk_id}: {str(e)}")
             return False
     
     async def mark_processed(self, trans_id: str) -> bool:
@@ -516,13 +543,15 @@ class EmbedderService:
                     "text_preview": chunk_text[:100] + ("..." if len(chunk_text) > 100 else "")
                 }
                 
-                # Insert into database
-                success = await self.db.upsert(chunk_id, embedding, metadata)
+                # Insert into doc_chunks table with full text
+                success = await self.db.insert_chunk(trans_id, chunk_id, i, chunk_text, embedding, metadata)
                 
                 if success:
                     successful_chunks += 1
+                    logger.info(f"Successfully inserted chunk {i} in doc_chunks table")
                 else:
                     failed_chunks += 1
+                    logger.warning(f"Failed to insert chunk {i}")
                 
                 # Apply delay if configured
                 delay_time = max(BATCH_DELAY_MS / 1000, 0.01)

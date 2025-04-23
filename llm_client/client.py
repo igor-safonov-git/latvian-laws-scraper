@@ -8,6 +8,7 @@ import asyncio
 from typing import List
 import aiohttp
 from dotenv import load_dotenv
+import tiktoken
 
 # Setup basic logging
 logging.basicConfig(
@@ -30,6 +31,54 @@ load_dotenv()
 # Environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL = os.getenv("MODEL", "gpt-4")
+MAX_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "8000"))
+MAX_TOKEN_OVERHEAD = 1000  # Reserve tokens for system message, user prompt, and response
+
+# Initialize tokenizer
+tokenizer = tiktoken.get_encoding("cl100k_base")
+
+def count_tokens(text: str) -> int:
+    """Count tokens in a string using tiktoken."""
+    return len(tokenizer.encode(text))
+
+def limit_context_by_tokens(context_items: List[str], max_tokens: int) -> List[str]:
+    """
+    Limit context items to fit within token budget.
+    
+    Args:
+        context_items: List of context passages
+        max_tokens: Maximum tokens allowed for all context
+        
+    Returns:
+        List of context items that fit within token budget
+    """
+    limited_items = []
+    total_tokens = 0
+    
+    # Add items until we exceed token limit
+    for item in context_items:
+        item_tokens = count_tokens(item)
+        
+        # If this single item is larger than our budget, truncate it
+        if item_tokens > max_tokens and not limited_items:
+            tokens = tokenizer.encode(item)[:max_tokens]
+            truncated_item = tokenizer.decode(tokens)
+            limited_items.append(truncated_item)
+            logger.warning(f"Truncated large context item from {item_tokens} to {max_tokens} tokens")
+            break
+        
+        # If adding this item would exceed our budget, stop
+        if total_tokens + item_tokens > max_tokens:
+            break
+            
+        # Otherwise add it to our list
+        limited_items.append(item)
+        total_tokens += item_tokens
+        
+    logger.info(f"Context limiting: {len(context_items)} items → {len(limited_items)} items")
+    logger.info(f"Token usage: {total_tokens}/{max_tokens} tokens ({total_tokens/max_tokens:.1%})")
+    
+    return limited_items
 
 async def answer(question: str, context: List[str]) -> str:
     """
@@ -52,8 +101,25 @@ async def answer(question: str, context: List[str]) -> str:
         logger.warning("Empty context provided, using generic response")
         return "I couldn't find specific information about this in the available data."
 
+    # Count tokens in the question and system message to determine context budget
+    question_tokens = count_tokens(question)
+    system_tokens = count_tokens("You are a helpful assistant that provides accurate information based on the context provided.")
+    
+    # Calculate token budget for context
+    context_token_budget = MAX_TOKENS - question_tokens - system_tokens - MAX_TOKEN_OVERHEAD
+    if context_token_budget < 500:
+        logger.warning(f"Very small context budget: {context_token_budget} tokens")
+        context_token_budget = 500  # Ensure minimum context
+    
+    # Limit context to fit within token budget
+    limited_context = limit_context_by_tokens(valid_context, context_token_budget)
+    
+    # Log token usage info
+    total_context_tokens = sum(count_tokens(c) for c in limited_context)
+    logger.info(f"Token usage: question={question_tokens}, context={total_context_tokens}, total={question_tokens + total_context_tokens + system_tokens}")
+    
     # Prepare context by joining with newlines and double newlines between items
-    joined_context = "\n\n".join(valid_context)
+    joined_context = "\n\n".join(limited_context)
     
     # Construct the complete prompt
     prompt = f"Answer the question using these excerpts:\n\n{joined_context}\n\nQ: {question}\nA:"
@@ -75,7 +141,7 @@ async def answer(question: str, context: List[str]) -> str:
     
     # Log basic info
     logger.info(f"Question: {question}")
-    logger.info(f"Context: {len(valid_context)} excerpts, {len(joined_context)} characters")
+    logger.info(f"Context: {len(limited_context)}/{len(valid_context)} excerpts, {len(joined_context)} characters")
     
     try:
         # Make the API request

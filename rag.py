@@ -146,50 +146,40 @@ async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[st
         # Convert embedding to correct format for pgvector
         embedding_str = str(embedding).replace("'", "").replace(", ", ",")
         
-        # Query for similar documents from the docs table
-        # This is where the embeddings currently exist
+        # Query doc_chunks table only - no fallbacks to docs table
+        logger.info("Querying doc_chunks table for full text chunks...")
         rows = await conn.fetch(
             """
             SELECT
-                id,
-                metadata,
-                embedding <-> $1::vector AS score
-            FROM docs
-            WHERE embedding IS NOT NULL
+                dc.id as doc_id,
+                dc.chunk_id as id,
+                dc.chunk_text as full_text,
+                dc.chunk_index,
+                dc.metadata,
+                dc.embedding <-> $1::vector AS score
+            FROM doc_chunks dc
+            WHERE dc.embedding IS NOT NULL
             ORDER BY score
             LIMIT $2
             """,
             embedding_str,
             limit
         )
-        
-        # Log raw results for debugging
-        try:
-            # Convert rows to a more loggable format
-            log_rows = []
-            for row in rows:
-                log_rows.append({
-                    "id": row["id"],
-                    "score": float(row["score"]),
-                    "metadata_keys": list(row["metadata"].keys()) if row["metadata"] else []
-                })
-            logger.info(f"Raw query results: {json.dumps(log_rows)}")
-        except Exception as e:
-            logger.error(f"Error logging query results: {str(e)}")
+            
+        # Log success
+        logger.info(f"Query successful - retrieved {len(rows)} document chunks")
         
         # Convert rows to dictionaries
         results = []
         for i, row in enumerate(rows):
-            # Log the full metadata for debugging
+            # Get full text
+            full_text = row.get("full_text")
+            
+            # Parse metadata
             try:
-                logger.info(f"Document {i} full metadata: {row['metadata']}")
-                logger.info(f"Document {i} metadata type: {type(row['metadata']).__name__}")
-                
-                # Parse metadata if it's a string (JSON)
                 if isinstance(row['metadata'], str):
                     try:
                         metadata = json.loads(row['metadata'])
-                        logger.info(f"Successfully parsed metadata JSON to dict")
                     except json.JSONDecodeError:
                         logger.error(f"Failed to parse metadata JSON: {row['metadata']}")
                         metadata = {}
@@ -199,36 +189,21 @@ async def query_similar_docs(embedding: List[float], limit: int) -> List[Dict[st
                 logger.error(f"Document {i} metadata error: {str(e)}")
                 metadata = {}
             
-            # Check if text_preview exists and log it with more details
-            text_preview = metadata.get("text_preview")
-            logger.info(f"Document {i} text_preview: {text_preview}")
-            logger.info(f"Document {i} metadata keys: {list(metadata.keys()) if metadata else []}")
-            
-            # Create result with debug info and fallback text
-            # Handle the case where text_preview might be missing
-            if not text_preview:
-                logger.warning(f"Document {i} missing text_preview field, generating fallback")
-                # Create a fallback preview from raw metadata string if available
-                try:
-                    metadata_str = str(row.get('metadata', '{}'))
-                    if len(metadata_str) > 20:
-                        text_preview = f"Metadata-based preview: {metadata_str[:100]}..."
-                    else:
-                        text_preview = "No preview available (metadata issue)"
-                except:
-                    text_preview = "No preview available"
-            
             result = {
-                "text": text_preview if text_preview is not None else "No preview available",
+                "text": full_text,
                 "url": metadata.get("url", "Unknown URL"),
                 "fetched_at": metadata.get("fetched_at", "Unknown date"),
                 "score": row["score"],
-                "metadata_keys": list(metadata.keys()) if metadata else []
+                "chunk_index": row.get("chunk_index", 0)
             }
             results.append(result)
-            logger.info(f"Document {i} result: {json.dumps(result)}")
+            logger.info(f"Document {i} result length: {len(full_text)} chars")
         
         return results
+    
+    except Exception as e:
+        logger.error(f"Error querying vector database: {str(e)}")
+        return []  # Return empty results on error
     
     finally:
         # Close connection
