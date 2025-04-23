@@ -88,10 +88,11 @@ class DatabaseConnector:
             """)
             
             # Create index on embedding for similarity search
+            # For large dimensions (>2000), use HNSW index instead of IVFFlat
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS docs_embedding_idx 
-                ON docs USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100);
+                ON docs USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64);
             """)
             
             cursor.close()
