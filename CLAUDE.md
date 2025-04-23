@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run services (Heroku only):
   - Scraper: `python scraper.py`
   - Translator: `python translator.py`
-  - Embedder: `python embedder_optimized.py [--once] [--memory-limit N] [--concurrency N]` (memory-optimized)
+  - Embedder: `python embedder.py [--once] [--memory-limit N] [--concurrency N]` (memory-optimized)
   - RAG: `python rag.py` (test retrieval functionality)
   - Web: `python app.py`
+  - Bot: `python bot.py`
 - Run tests (Heroku only, never locally):
   - All tests: Run each test script separately on Heroku
   - Scraper: `heroku run python tests/test_db.py [-v/--verbose] --app latvian-laws`
@@ -60,11 +61,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Core components:
   - `scraper.py`: Law document scraper
   - `translator.py`: Document translator
-  - `embedder_optimized.py`: Document embedder
+  - `embedder.py`: Document embedder
   - `rag.py`: Retrieval augmented generation
   - `rag_with_llm.py`: Integration of RAG and LLM
   - `llm_client/`: LLM client modules
-  - `telegram_llm_bot.py`: Telegram bot interface
+  - `bot.py`: Telegram bot interface
   - `app.py`: Web interface
   
 - Support directories:
