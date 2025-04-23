@@ -50,17 +50,17 @@ def format_latvian_text(input_file, output_file, format_type="bullet_points"):
         
         # Prepare prompt based on format type
         if format_type == "bullet_points":
-            instruction = "Pārveido šo tekstu uz strukturētu formātu ar aizzīmētiem punktiem. Saglabā visu būtisko informāciju."
+            instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar aizzīmētiem punktiem. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
         elif format_type == "sections":
-            instruction = "Pārveido šo tekstu uz strukturētu formātu ar sekcijām un apakšsekcijām. Saglabā visu būtisko informāciju."
+            instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā ar sekcijām un apakšsekcijām. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
         else:
-            instruction = "Pārveido šo tekstu uz strukturētu, viegli lasāmu formātu. Saglabā visu būtisko informāciju."
+            instruction = "Organizē šo juridisko tekstu skaidrā, strukturētā formātā. Saglabā visu būtisko informāciju, izcel svarīgākās tēmas un saglabā oriģinālo nozīmi, vienlaikus uzlabojot lasāmību."
         
         # Create messages for chat template
         messages = [
             {
                 "role": "system",
-                "content": "Tu esi EuroLLM — AI asistents, kas specializējas Eiropas valodās, īpaši latviešu valodā. Tu palīdzi pārveidot tekstus skaidrā, strukturētā formātā."
+                "content": "Tu esi EuroLLM — AI asistents un eksperts Latvijas tiesību jomā, kas specializējas juridisko tekstu strukturēšanā. Tev ir dziļas zināšanas par Latvijas likumdošanu un juridisko terminoloģiju. Tu pārvērto juridiskos tekstus precīzā, skaidrā un labi strukturētā formātā."
             },
             {
                 "role": "user", 
