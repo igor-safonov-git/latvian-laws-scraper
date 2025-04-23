@@ -56,8 +56,8 @@ encoder = tiktoken.get_encoding("cl100k_base")  # Used by text-embedding models
 DATABASE_URL = os.getenv("DATABASE_URL")
 CHUNK_TOKEN_SIZE = int(os.getenv("CHUNK_TOKEN_SIZE", "1024"))
 BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "0"))
-EMBEDDING_MODEL = "text-embedding-3-large"
-EMBEDDING_DIMENSIONS = 3072  # Specific to text-embedding-3-large
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIMENSIONS = 512  # Specific to text-embedding-3-small
 
 class DatabaseConnector:
     """Manages database connections and operations."""
@@ -87,13 +87,15 @@ class DatabaseConnector:
                 );
             """)
             
-            # Create index on embedding for similarity search
-            # For large dimensions (>2000), use HNSW index instead of IVFFlat
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS docs_embedding_idx 
-                ON docs USING hnsw (embedding vector_cosine_ops)
-                WITH (m = 16, ef_construction = 64);
-            """)
+            # Optional: create HNSW index for faster similarity search
+            try:
+                cursor.execute(f"""
+                    CREATE INDEX IF NOT EXISTS docs_embedding_idx 
+                    ON docs USING hnsw (embedding vector_cosine_ops)
+                    WITH (m = 16, ef_construction = 64);
+                """ )
+            except Exception as e:
+                logger.warning(f"Could not create HNSW index: {e}")
             
             cursor.close()
             conn.close()
@@ -139,15 +141,17 @@ class DatabaseConnector:
     async def get_translations(self) -> List[Dict[str, Any]]:
         """Get all translated documents that need processing."""
         try:
+            # Fetch untranslated documents from raw_docs
             cursor = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cursor.execute("""
-                SELECT id AS trans_id, url, fetched_at, translated_text 
-                FROM trans_docs 
+                SELECT id AS trans_id, url, fetched_at, translated_text
+                FROM raw_docs
                 WHERE translated_text IS NOT NULL
-            """)
+                  AND (processed = FALSE OR processed IS NULL)
+            """ )
             results = cursor.fetchall()
             cursor.close()
-            logger.info(f"Found {len(results)} translated documents")
+            logger.info(f"Found {len(results)} translated documents to process")
             return results
         except Exception as e:
             logger.error(f"Failed to get translations: {str(e)}")
@@ -160,15 +164,15 @@ class DatabaseConnector:
             cursor.execute(
                 """
                 INSERT INTO docs (id, metadata, embedding) 
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s::vector)
                 ON CONFLICT (id) DO UPDATE 
-                SET metadata = %s, embedding = %s
+                SET metadata = %s, embedding = %s::vector
                 """,
                 (
-                    chunk_id, 
-                    json.dumps(metadata), 
-                    embedding, 
-                    json.dumps(metadata), 
+                    chunk_id,
+                    json.dumps(metadata),
+                    embedding,
+                    json.dumps(metadata),
                     embedding
                 )
             )
@@ -181,9 +185,10 @@ class DatabaseConnector:
     async def mark_processed(self, trans_id: str) -> bool:
         """Mark a translation as processed."""
         try:
+            # Mark the raw document as processed
             cursor = self.conn.cursor()
             cursor.execute(
-                "UPDATE trans_docs SET processed = TRUE WHERE id = %s",
+                "UPDATE raw_docs SET processed = TRUE WHERE id = %s",
                 (trans_id,)
             )
             cursor.close()
@@ -327,11 +332,12 @@ class EmbedderService:
                 # Get embedding for this chunk
                 embedding = await get_embedding(chunk_text, session)
                 
-                # Store in database with metadata
+                # Store in database with metadata including a text preview
                 metadata = {
                     "url": url,
                     "fetched_at": fetched_at.isoformat() if isinstance(fetched_at, datetime) else fetched_at,
-                    "chunk_idx": i
+                    "chunk_idx": i,
+                    "text_preview": chunk_text[:200] + ("..." if len(chunk_text) > 200 else "")
                 }
                 
                 success = await self.db.upsert(chunk_id, embedding, metadata)
