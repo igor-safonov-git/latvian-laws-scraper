@@ -130,14 +130,14 @@ async def test_streaming_embedder(database_url: str, doc_info: Dict[str, Any]):
     
     try:
         # Use a modified approach to fetch the document directly
-        async with service.conn.transaction():
+        async with service.db.conn.transaction():
             # Directly fetch our test document
             query = """
                 SELECT id AS trans_id, url, fetched_at, translated_text
                 FROM raw_docs
                 WHERE id = $1 AND translated_text IS NOT NULL
             """
-            record = await service.conn.fetchrow(query, doc_info["id"])
+            record = await service.db.conn.fetchrow(query, doc_info["id"])
             
             if not record:
                 logger.error(f"Test document {doc_info['id']} not found")
