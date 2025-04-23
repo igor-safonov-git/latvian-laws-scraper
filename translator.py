@@ -562,7 +562,7 @@ class Translator:
             return stats
 
     async def start(self) -> None:
-        """Run the translator job once."""
+        """Start the translator service in continuous mode."""
         self.setup()
 
         # Check API key status
@@ -574,11 +574,27 @@ class Translator:
                 logger.error("DeepL API key verification failed - translation cannot proceed")
                 logger.error("Update DEEPL_API_KEY in Heroku config with a valid API key")
 
-        # Run translation job
+        # Run initial translation job
         await self.run_job()
 
         # Run tests to verify translator functionality
         self.run_tests()
+        
+        # Continue running in a loop
+        logger.info(f"Translator service running in continuous mode with {self.poll_interval}s poll interval")
+        while True:
+            try:
+                # Wait for the poll interval
+                await asyncio.sleep(self.poll_interval)
+                
+                # Run the job
+                logger.info(f"Running scheduled translator job at {datetime.now().isoformat()}")
+                await self.run_job()
+                
+            except Exception as e:
+                logger.error(f"Error in translator service loop: {str(e)}")
+                # Don't exit, just continue the loop
+                await asyncio.sleep(5)  # Short delay before retry
 
 
 async def main() -> None:
