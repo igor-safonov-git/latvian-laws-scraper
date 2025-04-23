@@ -46,8 +46,8 @@ SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))
 TOP_K = int(os.getenv("TOP_K", "5"))
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "8000"))
 
-# Initialize OpenAI client
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+# Initialize OpenAI client with minimal configuration
+client = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=None)
 
 # Initialize tokenizer for text truncation
 encoder = tiktoken.get_encoding("cl100k_base")
