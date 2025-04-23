@@ -300,6 +300,8 @@ class LatvianFormatter:
 
 def main():
     """Main entry point for the script."""
+    global MEMORY_LIMIT_MB
+    
     parser = argparse.ArgumentParser(description="Format Latvian texts using EuroLLM")
     parser.add_argument("--batch-size", type=int, default=10, help="Number of documents to process in one batch")
     parser.add_argument("--format-type", type=str, default="bullet_points", 
@@ -311,7 +313,6 @@ def main():
     args = parser.parse_args()
     
     # Apply command line arguments
-    global MEMORY_LIMIT_MB
     MEMORY_LIMIT_MB = args.memory_limit
     
     logger.info(f"Using memory limit: {MEMORY_LIMIT_MB}MB, format type: {args.format_type}, batch size: {args.batch_size}")
