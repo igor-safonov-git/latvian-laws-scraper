@@ -31,25 +31,6 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL = os.getenv("MODEL", "gpt-4")
 
-# Web search tool definition
-web_search_tool = {
-    "type": "function",
-    "function": {
-        "name": "search_web",
-        "description": "Search the web for information that might help answer the question",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query to look up"
-                }
-            },
-            "required": ["query"]
-        }
-    }
-}
-
 async def answer(question: str, context: List[str]) -> str:
     """
     Query the OpenAI API with a question and provided context.
@@ -65,8 +46,14 @@ async def answer(question: str, context: List[str]) -> str:
         logger.error("OPENAI_API_KEY not found in environment variables")
         raise ValueError("OPENAI_API_KEY not provided. Please set it in the .env file.")
 
+    # Check if context is empty or contains empty strings
+    valid_context = [c for c in context if c and c.strip()]
+    if not valid_context:
+        logger.warning("Empty context provided, using generic response")
+        return "I couldn't find specific information about this in the available data."
+
     # Prepare context by joining with newlines and double newlines between items
-    joined_context = "\n\n".join(context)
+    joined_context = "\n\n".join(valid_context)
     
     # Construct the complete prompt
     prompt = f"Answer the question using these excerpts:\n\n{joined_context}\n\nQ: {question}\nA:"
@@ -83,13 +70,12 @@ async def answer(question: str, context: List[str]) -> str:
             {"role": "system", "content": "You are a helpful assistant that provides accurate information based on the context provided."},
             {"role": "user", "content": prompt}
         ],
-        "tools": [web_search_tool],
         "temperature": 0.0
     }
     
     # Log basic info
     logger.info(f"Question: {question}")
-    logger.info(f"Context: {len(context)} excerpts, {len(joined_context)} characters")
+    logger.info(f"Context: {len(valid_context)} excerpts, {len(joined_context)} characters")
     
     try:
         # Make the API request
@@ -108,7 +94,10 @@ async def answer(question: str, context: List[str]) -> str:
         
         # Extract the response text from the best choice
         response_message = result["choices"][0]["message"]
-        answer_text = response_message["content"]
+        answer_text = response_message.get("content", "")
+        
+        if not answer_text:
+            answer_text = "I couldn't generate a response based on the available information."
         
         # Log success
         logger.info(f"Successfully generated answer ({len(answer_text)} chars)")
@@ -117,7 +106,8 @@ async def answer(question: str, context: List[str]) -> str:
     
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {str(e)}")
-        raise
+        # Return a graceful message instead of raising an exception
+        return f"I encountered an error while processing your question. Please try again later."
 
 # If run directly, demonstrate usage
 if __name__ == "__main__":
