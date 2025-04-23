@@ -239,7 +239,7 @@ def chunker(text: str, max_tokens: int) -> Iterator[str]:
 async def get_embedding(text: str, session: aiohttp.ClientSession) -> List[float]:
     """
     Get embedding from OpenAI with retry and exponential backoff.
-    Uses the global client with API key.
+    Uses direct API call to avoid client initialization issues.
     
     Args:
         text: Text to embed
@@ -252,16 +252,29 @@ async def get_embedding(text: str, session: aiohttp.ClientSession) -> List[float
         Exception: If embedding fails after retries
     """
     try:
-        # Use the standard client (not async) in a thread pool to avoid issues
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, 
-            lambda: openai.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=text
-            )
-        )
-        return response.data[0].embedding
+        # Direct API call using aiohttp session
+        api_key = os.getenv("OPENAI_API_KEY")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        payload = {
+            "model": EMBEDDING_MODEL,
+            "input": text
+        }
+        
+        async with session.post(
+            "https://api.openai.com/v1/embeddings",
+            headers=headers,
+            json=payload
+        ) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                raise Exception(f"API Error: {response.status}, {error_text}")
+                
+            result = await response.json()
+            return result["data"][0]["embedding"]
+            
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
         raise
