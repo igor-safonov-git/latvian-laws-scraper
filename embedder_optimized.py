@@ -345,6 +345,8 @@ async def get_embedding(text: str, session: aiohttp.ClientSession, semaphore: as
     Get embedding from OpenAI with throttling, retry and memory checks.
     Uses semaphore to limit concurrent API calls.
     """
+    global EMBEDDING_DIMENSIONS
+    
     # Check memory before making API call
     if not await MemoryGuard.check_memory():
         raise Exception("Memory usage too high to generate embedding")
@@ -380,7 +382,6 @@ async def get_embedding(text: str, session: aiohttp.ClientSession, semaphore: as
                     logger.warning(f"Unexpected embedding dimensions: got {len(embedding)}, expected {EMBEDDING_DIMENSIONS}")
                     # Update the constant if this is the first run
                     if len(embedding) > 0:
-                        global EMBEDDING_DIMENSIONS
                         EMBEDDING_DIMENSIONS = len(embedding)
                         logger.info(f"Updated EMBEDDING_DIMENSIONS to {EMBEDDING_DIMENSIONS}")
                 
@@ -428,7 +429,6 @@ class OptimizedEmbedderService:
                     session, 
                     asyncio.Semaphore(1)
                 )
-                global EMBEDDING_DIMENSIONS
                 actual_dimensions = len(test_embedding)
                 
                 if actual_dimensions != EMBEDDING_DIMENSIONS:
