@@ -62,11 +62,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `translator.py`: Document translator
   - `embedder_optimized.py`: Document embedder
   - `rag.py`: Retrieval augmented generation
+  - `rag_with_llm.py`: Integration of RAG and LLM
   - `llm_client/`: LLM client modules
   - `telegram_llm_bot.py`: Telegram bot interface
   - `app.py`: Web interface
   
 - Support directories:
-  - `tests/`: Test scripts
+  - `tests/`: Test scripts and test data
+  - `utils/`: Utility scripts for maintenance and debugging
+  - `docs/`: Additional documentation files
   - `legacy/`: Previous versions and deprecated files
   - `development/`: Development and experimental files
+  - `logs/`: Log files (auto-generated)
