@@ -55,7 +55,7 @@ logger.addHandler(file_handler)
 # Configuration from environment
 DATABASE_URL = os.getenv("DATABASE_URL")
 CHUNK_TOKEN_SIZE = int(os.getenv("CHUNK_TOKEN_SIZE", "1024"))
-BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "0.1"))
+BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "1"))
 MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("MAX_CONCURRENT_EMBEDDINGS", "1"))
 MEMORY_LIMIT_MB = int(os.getenv("MEMORY_LIMIT_MB", "400"))
 EMBEDDING_MODEL = "text-embedding-3-small"
