@@ -420,6 +420,8 @@ class OptimizedEmbedderService:
     
     async def setup(self) -> bool:
         """Set up the service and database."""
+        global EMBEDDING_DIMENSIONS
+        
         # Test API dimensions first if running as a service
         try:
             async with aiohttp.ClientSession() as session:
