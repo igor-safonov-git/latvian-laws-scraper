@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import re
 
 # Load environment variables
 load_dotenv()
@@ -321,43 +322,121 @@ class AsyncDatabaseConnector:
             logger.error(f"Failed to mark document {trans_id} as processed: {str(e)}")
             return False
 
+def split_into_sentences(text):
+    """Split text into sentences using regex for better boundary detection."""
+    # Pattern matches sentence endings (period, question mark, exclamation mark) followed by space/newline
+    sentence_endings = r'(?<=[.!?])\s+'
+    sentences = re.split(sentence_endings, text)
+    # Filter out empty sentences and strip whitespace
+    return [s.strip() for s in sentences if s.strip()]
+
+def intelligent_chunk_text(text: str, max_tokens: int, overlap_tokens: int = 200) -> Iterator[str]:
+    """
+    Create chunks intelligently by respecting sentence boundaries with overlap.
+    
+    Args:
+        text: Text to chunk
+        max_tokens: Maximum tokens per chunk
+        overlap_tokens: Number of tokens to overlap between chunks (default 200)
+        
+    Returns:
+        Iterator of text chunks
+    """
+    if not text:
+        return
+    
+    # First split the text into sentences
+    sentences = split_into_sentences(text)
+    
+    # Process in batches to avoid loading everything into memory
+    current_chunk = []
+    current_token_count = 0
+    prev_end_sentences = []  # Store sentences from end of previous chunk for overlap
+    
+    for sentence in sentences:
+        # Count tokens in this sentence
+        sentence_tokens = len(encoder.encode(sentence))
+        
+        # Check if adding this sentence would exceed the limit
+        if current_token_count + sentence_tokens > max_tokens and current_chunk:
+            # If this sentence would push us over the limit, yield the current chunk
+            chunk_text = " ".join(current_chunk)
+            yield chunk_text
+            
+            # Save the last few sentences for overlap with next chunk
+            # Take sentences from the end of current chunk that fit within overlap_tokens
+            overlap_count = 0
+            prev_end_sentences = []
+            for s in reversed(current_chunk):
+                s_tokens = len(encoder.encode(s))
+                if overlap_count + s_tokens <= overlap_tokens:
+                    prev_end_sentences.insert(0, s)
+                    overlap_count += s_tokens
+                else:
+                    break
+            
+            # Start a new chunk with overlap sentences
+            current_chunk = prev_end_sentences.copy()
+            current_token_count = overlap_count
+        
+        # Add this sentence to current chunk
+        current_chunk.append(sentence)
+        current_token_count += sentence_tokens
+    
+    # Don't forget the last chunk
+    if current_chunk:
+        yield " ".join(current_chunk)
+
 def stream_chunk_text(text: str, max_tokens: int) -> Iterator[str]:
     """
-    Stream-chunk text into slices with maximum token size.
+    Stream-chunk text into slices with intelligent boundaries.
     Uses a generator to yield chunks without loading all at once.
     """
     if not text:
         return
     
-    # Process text in segments for large documents to avoid loading all tokens at once
-    segment_size = 100000  # Process ~100K chars at a time
-    segments = range(0, len(text), segment_size)
+    # Process text in segments for large documents to avoid loading all at once
+    segment_size = 200000  # Process ~200K chars at a time
     
-    for segment_start in segments:
-        segment_end = min(segment_start + segment_size, len(text))
-        segment = text[segment_start:segment_end]
+    # If text is small enough, use intelligent chunking directly
+    if len(text) <= segment_size:
+        yield from intelligent_chunk_text(text, max_tokens)
+        return
+    
+    # Otherwise, process in segments
+    segments = range(0, len(text), segment_size)
+    overlap_chars = 5000  # Character overlap between segments to avoid cutting sentences
+    
+    prev_segment_end = 0
+    for segment_idx, segment_start in enumerate(segments):
+        # Include overlap with previous segment
+        actual_start = max(0, segment_start - overlap_chars) if segment_idx > 0 else 0
         
-        # Get token IDs from the segment
-        tokens = encoder.encode(segment)
+        # Get segment end with overlap for next segment
+        segment_end = min(segment_start + segment_size + overlap_chars, len(text))
         
-        # Create chunks with maximum token size
-        start_idx = 0
-        while start_idx < len(tokens):
-            # Get chunk of appropriate token size
-            end_idx = min(start_idx + max_tokens, len(tokens))
-            chunk_tokens = tokens[start_idx:end_idx]
+        # Skip if we've already processed this text
+        if actual_start >= prev_segment_end:
+            segment = text[actual_start:segment_end]
             
-            # Convert tokens back to text
-            chunk = encoder.decode(chunk_tokens)
+            # Find a good breakpoint (end of paragraph or sentence) if this isn't the start
+            if segment_idx > 0:
+                # Look for paragraph break near our overlap point
+                paragraph_break = segment.find('\n\n', segment_start - actual_start - 100)
+                if paragraph_break != -1 and paragraph_break < segment_start - actual_start + 100:
+                    # Found a paragraph break in our overlap zone, use it
+                    segment = segment[paragraph_break + 2:]
+                    actual_start = actual_start + paragraph_break + 2
             
-            # Yield the chunk
-            yield chunk
+            # Use intelligent chunking on this segment
+            for chunk in intelligent_chunk_text(segment, max_tokens):
+                yield chunk
+                
+            prev_segment_end = segment_end
             
-            # Update start index for next chunk
-            start_idx = end_idx
-            
-            # Help garbage collector between chunks
-            chunk_tokens = None
+        # Help garbage collection between segments
+        segment = None
+        gc.collect()
 
 @retry(
     retry=retry_if_exception_type(Exception),
