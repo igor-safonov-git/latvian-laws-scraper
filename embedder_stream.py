@@ -26,8 +26,6 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import tiktoken
 import openai
-import httpx
-from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Load environment variables
@@ -49,9 +47,8 @@ file_handler = logging.FileHandler("./logs/embedder.log")
 file_handler.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 
-# Initialize OpenAI client
-# Simple initialization for compatibility with all versions
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize OpenAI client with API key
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 encoder = tiktoken.get_encoding("cl100k_base")  # Used by text-embedding models
 
@@ -229,13 +226,14 @@ def chunker(text: str, max_tokens: int) -> Iterator[str]:
         start_idx = end_idx
 
 @retry(
-    retry=retry_if_exception_type((openai.APIConnectionError, openai.APITimeoutError)),
+    retry=retry_if_exception_type(Exception),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10)
 )
 async def get_embedding(text: str, session: aiohttp.ClientSession) -> List[float]:
     """
     Get embedding from OpenAI with retry and exponential backoff.
+    Uses the global client with API key.
     
     Args:
         text: Text to embed
@@ -247,11 +245,20 @@ async def get_embedding(text: str, session: aiohttp.ClientSession) -> List[float
     Raises:
         Exception: If embedding fails after retries
     """
-    response = await openai_client.embeddings.create(
-        model=EMBEDDING_MODEL,
-        input=text
-    )
-    return response.data[0].embedding
+    try:
+        # Use the standard client (not async) in a thread pool to avoid issues
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, 
+            lambda: openai.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=text
+            )
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        logger.error(f"Error generating embedding: {str(e)}")
+        raise
 
 async def log_chunk_status(chunk_id: str, status: str, error: Optional[str] = None) -> None:
     """
