@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 Memory-optimized embedder service that processes documents into vector embeddings
-with minimal RAM footprint (<400MB) to prevent Heroku R14/R15 memory errors.
+with minimal RAM footprint to prevent Heroku memory errors.
 
 This service:
-1. Runs as a scheduled nightly job at 00:30 UTC (preferably on a worker dyno)
+1. Runs on-demand to process documents
 2. Streams data from database with server-side cursors (no fetchall)
 3. Processes texts with generator-based chunking
 4. Throttles concurrent operations with semaphores
-5. Actively monitors and manages memory usage
-6. Uses explicit GC hints to release memory
+5. Monitors memory usage
 """
 import os
 import gc
@@ -22,10 +21,9 @@ import aiohttp
 import asyncpg
 import psycopg2
 import psycopg2.extras
-from typing import Dict, List, Any, Optional, AsyncIterator, Iterator, Tuple, Callable
+from typing import Dict, List, Any, Optional, AsyncIterator, Iterator, Tuple
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import tiktoken
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -80,7 +78,7 @@ class MemoryGuard:
             logger.warning(f"Memory usage too high: {usage:.2f}MB > {threshold_mb}MB threshold")
             # Trigger garbage collection
             gc.collect()
-            await asyncio.sleep(0.1)  # Allow event loop to breathe
+            await asyncio.sleep(1)  # Allow event loop to breathe
             
             # Check again after GC
             usage = MemoryGuard.get_memory_usage_mb()
@@ -95,7 +93,6 @@ class AsyncDatabaseConnector:
     def __init__(self, database_url: str):
         """Initialize database connector with connection string."""
         self.database_url = database_url
-        self.pool = None
         self.conn = None
     
     async def setup_schema(self) -> bool:
@@ -146,8 +143,6 @@ class AsyncDatabaseConnector:
                             INSERT INTO docs (id, metadata)
                             SELECT id, metadata FROM docs_backup;
                         """)
-                        
-                        logger.info("Table recreated successfully with correct dimensions")
                 except Exception as e:
                     logger.warning(f"Could not check vector dimensions: {e}")
                     # If we can't check dimensions, recreate table to be safe
@@ -169,6 +164,27 @@ class AsyncDatabaseConnector:
                     );
                 """)
             
+            # Create other necessary tables
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS doc_chunks (
+                    id TEXT NOT NULL,
+                    chunk_id TEXT PRIMARY KEY,
+                    chunk_index INTEGER NOT NULL,
+                    chunk_text TEXT NOT NULL,
+                    metadata JSONB,
+                    embedding VECTOR({EMBEDDING_DIMENSIONS})
+                );
+            """)
+            
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS doc_summaries (
+                    id TEXT PRIMARY KEY,
+                    summary_text TEXT NOT NULL,
+                    metadata JSONB,
+                    embedding VECTOR({EMBEDDING_DIMENSIONS})
+                );
+            """)
+            
             # Optional: create HNSW index for faster similarity search
             try:
                 cursor.execute(f"""
@@ -181,7 +197,6 @@ class AsyncDatabaseConnector:
             
             cursor.close()
             conn.close()
-            logger.info("Database setup complete")
             return True
             
         except Exception as e:
@@ -193,7 +208,6 @@ class AsyncDatabaseConnector:
         try:
             # Create single connection for operations
             self.conn = await asyncpg.connect(self.database_url)
-            logger.info("Database connection established")
             return True
         except Exception as e:
             logger.error(f"Database connection failed: {str(e)}")
@@ -204,7 +218,6 @@ class AsyncDatabaseConnector:
         if self.conn:
             await self.conn.close()
             self.conn = None
-            logger.info("Database connection closed")
     
     async def clear_vectors(self) -> bool:
         """Clear all vectors from all vector tables unconditionally."""
@@ -217,15 +230,15 @@ class AsyncDatabaseConnector:
             logger.info("Unconditionally clearing ALL vector tables")
             
             # Clear main document vectors
-            result1 = await self.conn.execute("TRUNCATE TABLE docs")
+            await self.conn.execute("TRUNCATE TABLE docs")
             
             # Clear chunk vectors
-            result2 = await self.conn.execute("TRUNCATE TABLE doc_chunks")
+            await self.conn.execute("TRUNCATE TABLE doc_chunks")
             
             # Clear summary vectors
-            result3 = await self.conn.execute("TRUNCATE TABLE doc_summaries")
+            await self.conn.execute("TRUNCATE TABLE doc_summaries")
             
-            logger.info("Successfully cleared all vector tables (docs, doc_chunks, doc_summaries)")
+            logger.info("Successfully cleared all vector tables")
             
             # Help garbage collector
             gc.collect()
@@ -244,7 +257,7 @@ class AsyncDatabaseConnector:
         try:
             # Use asyncpg cursor for streaming results
             async with self.conn.transaction():
-                # First, count available documents for logging
+                # First, count available documents
                 count = await self.conn.fetchval("""
                     SELECT COUNT(*) 
                     FROM raw_docs
@@ -267,11 +280,6 @@ class AsyncDatabaseConnector:
                         "translated_text": record["translated_text"]
                     }
                     
-                    # Add debug logging for document
-                    logger.info(f"Processing document {doc['trans_id']} from {doc['url']}, " +
-                                f"text length: {len(doc['translated_text'])} chars")
-                    
-                    # Check memory before yielding
                     if await MemoryGuard.check_memory():
                         yield doc
                     else:
@@ -283,7 +291,6 @@ class AsyncDatabaseConnector:
     async def upsert(self, chunk_id: str, embedding: List[float], metadata: Dict[str, Any]) -> bool:
         """Insert or update a document chunk with its embedding."""
         if not await MemoryGuard.check_memory():
-            logger.error(f"Memory usage too high to upsert chunk {chunk_id}")
             return False
             
         try:
@@ -291,7 +298,6 @@ class AsyncDatabaseConnector:
             metadata_json = json.dumps(metadata)
             
             # Prepare embedding as a string for pgvector
-            # The vector type in PostgreSQL expects a string like '[0.1, 0.2, 0.3]'
             embedding_str = str(embedding).replace("'", "").replace(", ", ",")
             
             # Perform upsert
@@ -413,39 +419,20 @@ async def get_embedding(text: str, session: aiohttp.ClientSession, semaphore: as
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
             raise
-        
-        finally:
-            # Force garbage collection after embedding
-            await asyncio.sleep(0)
 
-async def log_chunk_status(chunk_id: str, status: str, error: Optional[str] = None) -> None:
-    """Log chunk processing status to JSON log file."""
-    log_entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "chunk_id": chunk_id,
-        "status": status,
-        "memory_mb": MemoryGuard.get_memory_usage_mb()
-    }
-    
-    if error:
-        log_entry["error"] = error
-    
-    logger.info(json.dumps(log_entry))
-
-class OptimizedEmbedderService:
-    """Memory-optimized service for processing documents and generating embeddings."""
+class EmbedderService:
+    """Service for processing documents and generating embeddings."""
     
     def __init__(self):
         """Initialize the embedder service."""
         self.db = AsyncDatabaseConnector(DATABASE_URL)
-        self.scheduler = AsyncIOScheduler()
         self.embedding_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EMBEDDINGS)
     
     async def setup(self) -> bool:
         """Set up the service and database."""
         global EMBEDDING_DIMENSIONS
         
-        # Test API dimensions first if running as a service
+        # Test API dimensions first
         try:
             async with aiohttp.ClientSession() as session:
                 # Use a simple test to check dimensions
@@ -464,14 +451,13 @@ class OptimizedEmbedderService:
                 # Force cleanup
                 test_embedding = None
                 gc.collect()
-                await asyncio.sleep(0)
         except Exception as e:
             logger.error(f"Failed to test embedding dimensions: {str(e)}")
             
         # Set up database with potentially updated dimensions
         db_setup = await self.db.setup_schema()
         if db_setup:
-            logger.info(f"Embedder service setup complete, using {EMBEDDING_DIMENSIONS} dimensions")
+            logger.info(f"Using {EMBEDDING_DIMENSIONS} dimensions")
             return True
         return False
     
@@ -486,10 +472,6 @@ class OptimizedEmbedderService:
         Returns:
             Tuple of (successful_chunks, failed_chunks)
         """
-        # Log memory usage at start
-        mem_usage = MemoryGuard.get_memory_usage_mb()
-        logger.info(f"Starting document processing with {mem_usage:.2f}MB memory usage")
-        
         if not await MemoryGuard.check_memory():
             logger.error("Memory usage too high to start document processing")
             return 0, 1
@@ -532,19 +514,16 @@ class OptimizedEmbedderService:
                 success = await self.db.upsert(chunk_id, embedding, metadata)
                 
                 if success:
-                    await log_chunk_status(chunk_id, "ok")
                     successful_chunks += 1
                 else:
-                    await log_chunk_status(chunk_id, "error", "Database insertion failed")
                     failed_chunks += 1
                 
-                # Apply delay if configured or force a small delay for GC
+                # Apply delay if configured
                 delay_time = max(BATCH_DELAY_MS / 1000, 0.01)
                 await asyncio.sleep(delay_time)
                     
             except Exception as e:
                 logger.error(f"Error processing chunk {chunk_id}: {str(e)}")
-                await log_chunk_status(chunk_id, "error", str(e))
                 failed_chunks += 1
                 
             finally:
@@ -564,14 +543,12 @@ class OptimizedEmbedderService:
         gc.collect()
         
         logger.info(f"Completed document {trans_id}: {successful_chunks} chunks succeeded, {failed_chunks} failed")
-        logger.info(f"Memory usage after document: {MemoryGuard.get_memory_usage_mb():.2f}MB")
         
         return successful_chunks, failed_chunks
     
     async def process_batch(self) -> None:
         """Process all pending translated documents with memory monitoring."""
         logger.info("Starting batch processing")
-        logger.info(f"Initial memory usage: {MemoryGuard.get_memory_usage_mb():.2f}MB")
         
         # Connect to database
         if not await self.db.connect():
@@ -595,18 +572,6 @@ class OptimizedEmbedderService:
             # Process documents one by one
             async with aiohttp.ClientSession() as session:
                 async for doc in self.db.stream_translations():
-                    # Check memory before each document
-                    if not await MemoryGuard.check_memory():
-                        logger.error("Memory limit reached, pausing batch processing")
-                        # Force GC and wait
-                        gc.collect()
-                        await asyncio.sleep(5)
-                        
-                        # Check again
-                        if not await MemoryGuard.check_memory():
-                            logger.error("Memory still high after pause, aborting batch")
-                            break
-                    
                     total_docs += 1
                     successes, failures = await self.process_document(doc, session)
                     
@@ -615,13 +580,8 @@ class OptimizedEmbedderService:
                     
                     total_chunks += successes
                     failed_chunks += failures
-                    
-                    # Log progress and memory usage
-                    if total_docs % 5 == 0:
-                        logger.info(f"Progress: {processed_docs}/{total_docs} docs, {total_chunks} chunks, memory: {MemoryGuard.get_memory_usage_mb():.2f}MB")
             
             logger.info(f"Batch complete: {processed_docs}/{total_docs} documents, {total_chunks} chunks created, {failed_chunks} chunks failed")
-            logger.info(f"Final memory usage: {MemoryGuard.get_memory_usage_mb():.2f}MB")
             
         except Exception as e:
             logger.error(f"Batch processing failed: {str(e)}")
@@ -629,56 +589,10 @@ class OptimizedEmbedderService:
         finally:
             # Close database connection
             await self.db.disconnect()
-            
-            # Final GC
-            gc.collect()
-    
-    def schedule_jobs(self) -> None:
-        """Schedule the nightly batch job."""
-        self.scheduler.add_job(
-            self.process_batch,
-            'cron',
-            hour=0,
-            minute=30,
-            id='nightly_batch'
-        )
-        logger.info("Scheduled nightly batch job for 00:30 UTC")
-    
-    async def run(self) -> None:
-        """Run the embedder service."""
-        # Set up the service
-        setup_success = await self.setup()
-        if not setup_success:
-            logger.error("Failed to set up embedder service")
-            return
-        
-        # Schedule jobs
-        self.schedule_jobs()
-        
-        # Start scheduler
-        self.scheduler.start()
-        logger.info("Embedder service started")
-        
-        try:
-            # Keep the service running with periodic memory checks
-            while True:
-                mem_usage = MemoryGuard.get_memory_usage_mb()
-                if mem_usage > MEMORY_LIMIT_MB:
-                    logger.warning(f"High memory usage during idle: {mem_usage:.2f}MB")
-                    gc.collect()
-                
-                await asyncio.sleep(60)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            logger.info("Embedder service shutting down")
-            self.scheduler.shutdown()
 
 async def run_once() -> None:
-    """Run the embedder service once for manual execution."""
-    # Log starting memory
-    start_mem = MemoryGuard.get_memory_usage_mb()
-    logger.info(f"Starting one-time execution with {start_mem:.2f}MB memory usage")
-    
-    service = OptimizedEmbedderService()
+    """Run the embedder service once."""
+    service = EmbedderService()
     
     # Setup and run
     setup_success = await service.setup()
@@ -691,43 +605,19 @@ async def run_once() -> None:
     
     # Final memory cleanup
     gc.collect()
-    end_mem = MemoryGuard.get_memory_usage_mb()
-    logger.info(f"Manual execution complete. Memory usage: {end_mem:.2f}MB (change: {end_mem-start_mem:.2f}MB)")
+    logger.info("Completed processing")
 
 if __name__ == "__main__":
     # Parse command-line arguments
     import argparse
-    import sys
     
     parser = argparse.ArgumentParser(description="Memory-optimized embedder service for vector embeddings")
-    parser.add_argument("--once", action="store_true", help="Run once and exit (no scheduling)")
     parser.add_argument("--memory-limit", type=int, default=MEMORY_LIMIT_MB, 
                         help=f"Memory limit in MB (default: {MEMORY_LIMIT_MB})")
     parser.add_argument("--concurrency", type=int, default=MAX_CONCURRENT_EMBEDDINGS,
                         help=f"Maximum concurrent embedding operations (default: {MAX_CONCURRENT_EMBEDDINGS})")
     
-    # Handle both direct arguments and passing after -- in Heroku
-    if "--once" in sys.argv:
-        args = parser.parse_args()
-    else:
-        try:
-            args = parser.parse_args()
-        except:
-            args = argparse.Namespace(once=False, memory_limit=MEMORY_LIMIT_MB, concurrency=MAX_CONCURRENT_EMBEDDINGS)
-            for i, arg in enumerate(sys.argv):
-                if arg == "--" and i+1 < len(sys.argv):
-                    remaining = sys.argv[i+1:]
-                    if "--once" in remaining:
-                        args.once = True
-                    if "--memory-limit" in remaining:
-                        idx = remaining.index("--memory-limit")
-                        if idx+1 < len(remaining):
-                            args.memory_limit = int(remaining[idx+1])
-                    if "--concurrency" in remaining:
-                        idx = remaining.index("--concurrency")
-                        if idx+1 < len(remaining):
-                            args.concurrency = int(remaining[idx+1])
-                    break
+    args = parser.parse_args()
     
     # Apply command line arguments
     MEMORY_LIMIT_MB = args.memory_limit
@@ -735,11 +625,5 @@ if __name__ == "__main__":
     
     logger.info(f"Using memory limit: {MEMORY_LIMIT_MB}MB, concurrency: {MAX_CONCURRENT_EMBEDDINGS}")
     
-    # Run either once or as a scheduled service
-    if args.once:
-        logger.info("Running embedder service once")
-        asyncio.run(run_once())
-    else:
-        # Run as a service
-        logger.info("Starting scheduled embedder service")
-        asyncio.run(OptimizedEmbedderService().run())
+    # Run the embedder
+    asyncio.run(run_once())
