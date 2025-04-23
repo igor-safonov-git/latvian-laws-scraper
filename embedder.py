@@ -1,1 +1,0 @@
-/Users/igorsafonov/Documents/GitHub/latvian-laws/embedder_enhanced.py
