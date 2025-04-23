@@ -42,6 +42,8 @@ BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "100"))
 MEMORY_LIMIT_MB = int(os.getenv("MEMORY_LIMIT_MB", "4000"))
 MODEL_ID = os.getenv("FORMATTER_MODEL_ID", "utter-project/EuroLLM-9B-Instruct")
 
+os.environ["TRANSFORMERS_CACHE"] = "/tmp/transformers_cache"
+
 class MemoryGuard:
     """Monitors memory usage and prevents exceeding limits."""
     
