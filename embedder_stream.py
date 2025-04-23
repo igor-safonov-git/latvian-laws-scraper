@@ -5,12 +5,13 @@ using OpenAI's text-embedding-3-small model with streaming for memory efficiency
 
 This service:
 1. Runs as a scheduled nightly job at 00:30 UTC
-2. Clears previous vectors from the database
-3. Processes all translated documents into chunks
-4. Computes embeddings for each chunk
-5. Stores embeddings with metadata in PostgreSQL with pgvector extension
-6. Updates document status when processed
-7. Logs all operations
+2. Auto-detects embedding dimensions and adjusts database schema if needed
+3. Clears previous vectors from the database
+4. Processes all translated documents into chunks using streaming (memory-efficient)
+5. Computes embeddings for each chunk
+6. Stores embeddings with metadata in PostgreSQL with pgvector extension
+7. Updates document status when processed
+8. Logs all operations
 """
 import os
 import json
@@ -57,7 +58,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 CHUNK_TOKEN_SIZE = int(os.getenv("CHUNK_TOKEN_SIZE", "1024"))
 BATCH_DELAY_MS = int(os.getenv("BATCH_DELAY_MS", "0"))
 EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSIONS = 1536  # Specific to text-embedding-3-small
+EMBEDDING_DIMENSIONS = 1536  # Dimensions for text-embedding-3-small model
 
 class DatabaseConnector:
     """Manages database connections and operations."""
@@ -78,14 +79,68 @@ class DatabaseConnector:
             # Enable vector extension
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             
-            # Create documents table if it doesn't exist
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS docs (
-                    id TEXT PRIMARY KEY,
-                    metadata JSONB,
-                    embedding VECTOR({EMBEDDING_DIMENSIONS})
-                );
-            """)
+            # Check if docs table exists
+            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'docs');")
+            table_exists = cursor.fetchone()[0]
+            
+            if table_exists:
+                # Check column dimensions if table exists
+                try:
+                    cursor.execute("SELECT typelem FROM pg_type WHERE typname = 'vector';")
+                    vector_typelem = cursor.fetchone()[0]
+                    
+                    cursor.execute(f"""
+                        SELECT atttypmod FROM pg_attribute 
+                        WHERE attrelid = 'docs'::regclass AND attname = 'embedding';
+                    """)
+                    current_dimensions = cursor.fetchone()[0]
+                    
+                    if current_dimensions != EMBEDDING_DIMENSIONS:
+                        logger.warning(f"Vector dimension mismatch: table has {current_dimensions} dimensions, but {EMBEDDING_DIMENSIONS} expected")
+                        logger.info("Recreating docs table with correct dimensions...")
+                        
+                        # Backup metadata
+                        cursor.execute("CREATE TEMP TABLE docs_backup AS SELECT id, metadata FROM docs;")
+                        
+                        # Drop existing table and indexes
+                        cursor.execute("DROP TABLE IF EXISTS docs;")
+                        
+                        # Recreate with correct dimensions
+                        cursor.execute(f"""
+                            CREATE TABLE docs (
+                                id TEXT PRIMARY KEY,
+                                metadata JSONB,
+                                embedding VECTOR({EMBEDDING_DIMENSIONS})
+                            );
+                        """)
+                        
+                        # Restore metadata
+                        cursor.execute("""
+                            INSERT INTO docs (id, metadata)
+                            SELECT id, metadata FROM docs_backup;
+                        """)
+                        
+                        logger.info("Table recreated successfully with correct dimensions")
+                except Exception as e:
+                    logger.warning(f"Could not check vector dimensions: {e}")
+                    # If we can't check dimensions, recreate table to be safe
+                    cursor.execute("DROP TABLE IF EXISTS docs;")
+                    cursor.execute(f"""
+                        CREATE TABLE docs (
+                            id TEXT PRIMARY KEY,
+                            metadata JSONB,
+                            embedding VECTOR({EMBEDDING_DIMENSIONS})
+                        );
+                    """)
+            else:
+                # Create documents table if it doesn't exist
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS docs (
+                        id TEXT PRIMARY KEY,
+                        metadata JSONB,
+                        embedding VECTOR({EMBEDDING_DIMENSIONS})
+                    );
+                """)
             
             # Optional: create HNSW index for faster similarity search
             try:
@@ -273,7 +328,18 @@ async def get_embedding(text: str, session: aiohttp.ClientSession) -> List[float
                 raise Exception(f"API Error: {response.status}, {error_text}")
                 
             result = await response.json()
-            return result["data"][0]["embedding"]
+            embedding = result["data"][0]["embedding"]
+            
+            # Verify embedding dimensions
+            if len(embedding) != EMBEDDING_DIMENSIONS:
+                logger.warning(f"Unexpected embedding dimensions: got {len(embedding)}, expected {EMBEDDING_DIMENSIONS}")
+                # Update the constant if this is the first run
+                if len(embedding) > 0:
+                    global EMBEDDING_DIMENSIONS
+                    EMBEDDING_DIMENSIONS = len(embedding)
+                    logger.info(f"Updated EMBEDDING_DIMENSIONS to {EMBEDDING_DIMENSIONS}")
+            
+            return embedding
             
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
@@ -309,9 +375,25 @@ class EmbedderService:
     
     async def setup(self) -> bool:
         """Set up the service and database."""
+        # Test API dimensions first if running as a service
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Use a simple test to check dimensions
+                test_embedding = await get_embedding("Test embedding dimensions", session)
+                global EMBEDDING_DIMENSIONS
+                actual_dimensions = len(test_embedding)
+                
+                if actual_dimensions != EMBEDDING_DIMENSIONS:
+                    logger.warning(f"Embedding dimensions mismatch: got {actual_dimensions}, expected {EMBEDDING_DIMENSIONS}")
+                    EMBEDDING_DIMENSIONS = actual_dimensions
+                    logger.info(f"Adjusted EMBEDDING_DIMENSIONS to {EMBEDDING_DIMENSIONS}")
+        except Exception as e:
+            logger.error(f"Failed to test embedding dimensions: {str(e)}")
+            
+        # Set up database with potentially updated dimensions
         db_setup = await self.db.setup()
         if db_setup:
-            logger.info("Embedder service setup complete")
+            logger.info(f"Embedder service setup complete, using {EMBEDDING_DIMENSIONS} dimensions")
             return True
         return False
     
@@ -456,6 +538,8 @@ class EmbedderService:
 async def run_once() -> None:
     """Run the embedder service once for manual execution."""
     service = EmbedderService()
+    
+    # Setup and run (dimensions will be tested in setup)
     setup_success = await service.setup()
     
     if not setup_success:
